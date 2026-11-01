@@ -1,0 +1,10 @@
+.venv/
+.cache/
+.build-temp/
+.test-work/
+__pycache__/
+build/
+dist/
+.data/
+.trash/
+.workbuddy-ai/

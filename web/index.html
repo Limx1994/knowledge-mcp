@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>本地知识库</title><link rel="icon" href="/assets/book.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/style.css"><script src="/assets/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><img src="/assets/book.svg" width="34" height="34" alt=""><div><strong>本地知识库</strong><small>你的资料，留在你的电脑。</small></div></div>
+  <nav id="nav" aria-label="主导航"><button data-view="library" class="active">资料</button><button data-view="trash">回收站</button><button data-view="status">索引与状态</button></nav>
+  <span id="connection" class="connection">正在连接…</span>
+</header>
+<div id="notice" role="status" aria-live="polite" hidden></div>
+<main>
+<section id="setup-view" class="page" hidden>
+  <div class="page-heading"><div><small class="eyebrow">FIRST RUN</small><h1>选择知识库目录</h1><p>资料保存在你指定的本地目录，配置只记录路径，不上传任何内容。</p></div><span class="tag">仅本机访问</span></div>
+  <form id="setup-form" class="setup-card">
+    <label for="setup-root">知识库绝对路径</label>
+    <input id="setup-root" required autocomplete="off" spellcheck="false" placeholder="D:\知识库">
+    <label class="check"><input id="setup-create" type="checkbox"> 目录不存在时创建</label>
+    <p class="hint">路径可以是任意本地磁盘、中文或带空格的目录；知识库内部的符号链接与 junction 会被跳过。</p>
+    <p id="setup-error" class="error" role="alert" hidden></p>
+    <div class="actions"><button class="primary">保存并打开</button></div>
+  </form>
+  <p id="setup-config" class="hint"></p>
+</section>
+<section id="library-view" class="workspace" aria-label="知识资料">
+  <aside class="folders">
+    <div class="section-head"><h1>目录</h1><button id="refresh" class="subtle" title="刷新目录和文档">刷新</button></div>
+    <button id="new-folder" class="wide">新建文件夹</button>
+    <div id="tree" class="tree" aria-label="知识库目录">正在读取目录…</div>
+    <div class="folder-actions"><button id="move-folder" disabled>重命名 / 移动</button><button id="delete-folder" class="danger subtle" disabled>删除空目录</button></div>
+    <p class="hint">也可以直接编辑本地文件。查询时自动同步变化。</p>
+  </aside>
+  <section class="documents" aria-label="文档列表">
+    <div class="section-head"><div><small class="eyebrow">KNOWLEDGE</small><h2 id="directory-title">全部资料</h2></div><button id="new-document" class="primary">新建文档</button></div>
+    <form id="search-form" role="search"><label class="sr-only" for="search">搜索关键词</label><div class="search-row"><input id="search" type="search" placeholder="搜索内容或文件名" autocomplete="off"><button>搜索</button></div></form>
+    <label class="check"><input id="recursive" type="checkbox" checked> 包含子文件夹</label>
+    <div id="document-list" class="document-list" aria-live="polite">正在读取文档…</div>
+    <div class="pagination"><button id="previous" disabled>上一页</button><span id="page-info">0 篇文档</span><button id="next" disabled>下一页</button><span class="pager-extra">每页<select id="page-size"><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option></select>跳到<input id="page-jump" class="jump-input" type="number" min="1" step="1" value="1">页<button id="page-jump-btn" class="subtle">前往</button></span></div>
+  </section>
+  <section class="editor-panel" aria-label="文档编辑器">
+    <div class="editor-head"><div class="editor-caption"><small class="eyebrow">DOCUMENT</small><h2 id="editor-title">选择一篇文档</h2><span id="save-state">在左侧打开资料，或新建一篇文档。</span></div><button id="save" class="primary" disabled>保存</button></div>
+    <div class="editor-tools"><button id="move-document" disabled>重命名 / 移动</button><button id="delete-document" class="danger subtle" disabled>移入回收站</button><button id="reload-document" class="subtle" disabled>重新读取</button></div>
+    <div id="chunk-tools" class="editor-tools" hidden>
+      <button id="chunk-previous">上一段</button><button id="chunk-next">下一段</button>
+      <label for="chunk-offset">跳转到字节</label><input id="chunk-offset" type="number" min="0" step="1" value="0">
+      <button id="chunk-jump">跳转</button><span id="chunk-range"></span>
+      <span id="chunk-note" class="chunk-note">仅编辑当前片段，保存只替换这一段。</span>
+    </div>
+    <label class="sr-only" for="editor">文档正文</label><textarea id="editor" spellcheck="false" disabled placeholder="从目录与列表中选择一篇文档，开始整理你的知识。"></textarea>
+    <footer class="editor-footer"><span id="document-size">Markdown / 纯文本 · UTF-8</span><span>Ctrl + S 保存</span></footer>
+  </section>
+</section>
+<section id="trash-view" class="page" hidden>
+  <div class="page-heading"><div><small class="eyebrow">RECOVERY</small><h1>回收站</h1><p>删除的文档保留原路径与内容，可恢复到原来的位置。</p></div><button id="refresh-trash">刷新</button></div>
+  <div id="trash-list" class="records" aria-live="polite"></div>
+  <div class="pagination"><button id="trash-previous">上一页</button><span id="trash-info"></span><button id="trash-next">下一页</button><span class="pager-extra">每页<select id="trash-page-size"><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option></select>跳到<input id="trash-jump" class="jump-input" type="number" min="1" step="1" value="1">页<button id="trash-jump-btn" class="subtle">前往</button></span></div>
+</section>
+<section id="status-view" class="page" hidden>
+  <div class="page-heading"><div><small class="eyebrow">LOCAL SERVICE</small><h1>索引与状态</h1><p>原文保存在本地文件中，索引帮助你更快找到资料。</p></div><span class="tag">仅本机访问</span></div>
+  <dl id="service-status" class="status-list"></dl>
+  <section class="index-section"><h2>维护索引</h2><p>增量刷新同步变化文件；完整重建会重新读取全部资料，也能识别大小与修改时间未变化的内容修改。</p>
+    <div class="actions"><button id="refresh-index" class="primary">增量刷新</button><button id="rebuild-index">完整重建</button><span id="index-state" role="status">尚未执行手动索引任务</span></div>
+    <h3>最近同步结果</h3><pre id="sync-report">暂无记录</pre>
+    <h3>手动任务明细</h3><pre id="index-report">暂无记录</pre>
+  </section>
+</section>
+</main>
+<dialog id="path-dialog"><form id="path-form"><h2 id="dialog-title"></h2><p id="dialog-description"></p><label for="path-input">相对 knowledge 的路径</label><input id="path-input" required autocomplete="off"><p class="hint">使用 / 分隔文件夹；文档以 .md 或 .txt 结尾。</p><div class="actions"><button type="button" id="dialog-cancel">取消</button><button class="primary">确定</button></div></form></dialog>
+</body></html>
