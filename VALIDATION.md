@@ -2,72 +2,60 @@
 
 环境：Windows 10 Build 19045 x64、Python 3.14.6、SQLite 3.50.4、MCP SDK 2.2.0、PyInstaller 6.22.3、Node.js 22.22.2、Chrome 1440×900、Windows PowerShell 5.1。
 
-## 本轮：文档压缩与 release 重建（2026-11-01）
+## 本轮：崩溃记录与构建加固（2026-11-01）
 
-范围：只改 4 个 Markdown 文件并重建 `dist/` 发布产物，**未改动任何源码**。重建的原因是上一轮（多智能体审查修复）改完源码后没有重新打包，`dist/knowledge-mcp.exe` 停留在 16:00 的旧版本。
+范围：新增 `crashlog.py`、`tests/test_crashlog.py`；改动 `server.py`、`runtime.py`、`web_admin.py`、`tray.py`、`build.ps1`、`web/*`、`tests/test_web.py`、`tests/test_tray.py`、`tests/test_runtime.py`、`tests/test_editor.cjs`、`README.md`。无新增依赖，索引 schema 与 MCP 工具不变。
 
-### 文档压缩
+### 记录范围
 
-| 文件 | 前 | 后 |
-| --- | --- | --- |
-| `README.md` | 205 行 / 21,745 字节 | 178 行 / 20,414 字节 |
-| `VALIDATION.md` | 249 行 / 36,837 字节 | 106 行 / 约 11.5 KB |
-| `skills/knowledge-mcp/SKILL.md` | 113 行 / 6,463 字节 | 93 行 / 5,980 字节 |
-| `dist/SKILL.md` | 与上一行同源 | 同步后字节一致 |
+- 钩子：`sys.excepthook`、`threading.excepthook`、`sys.unraisablehook`（解释器收尾阶段跳过）；常驻后台另启 `faulthandler`，硬崩溃也留 Python 栈。入口在导入 MCP SDK 前安装，`__name__ == '__main__'` 守卫避免后台延迟导入把角色改回“启动”。
+- `StoreError` 等可预期失败不计入；命名管道监听、本地网页服务这类服务级致命异常单独记录并注明原因。
+- 位置 `<root>/.data/crashes/`（未配置时为配置目录下 `crashes/`）：`crash-<时间>-<PID>-<角色>.txt` 每次一份，`fatal-<PID>.log` 记硬崩溃；最多 20 份、单份 64 KiB，空 `fatal-*.log` 退出时删除。
+- 内容：时间、角色、PID 与父进程、程序路径、启动参数、Python 与平台、线程名、知识库与配置文件路径、异常摘要（超 2000 字符截断）、完整 traceback、其他线程栈（≤16 KiB）、`service.log` 末尾 40 行（≤8 KiB）；不含文档正文、票据和请求参数。
+- 页面与托盘：`GET /api/crashes` 返回最近 5 份（8 KiB 预览 + 截断标记），`POST {"action":"clear"}` 清空，沿用 Host/Origin/CSRF/会话校验；状态页新增分区与计数，托盘右键“崩溃记录”打开目录。
 
-四个文件合计约 81.5 KB → 约 43.8 KB（-46%），未删除任何量化边界或否定约束。
+### 实测
 
-- README：合并「使用 EXE」与「配置文件与首次配置」的重复启动说明；把拆成两节的工具表合并为一张 18 行表；索引与搜索条目按主题去重；新增「运行架构」「大文件与性能专项」两节归位原有内容。
-- VALIDATION：最近三轮保留细节，更早轮次压缩为摘要表，量化数据以单行保留。
-- SKILL：工作流 1/2 合并为读取（含大文件分段）、3/4 合并为写入，保留 7 个工作流、版本锁、失败不重放和错误对策表。
-- 事实校验：对 19 个关键量化值与变量名逐条 grep 复核（1,610,612,736、10 MiB、1 MiB、32 MiB、1000 行、3 秒、60 秒、256 KiB、20/50/100、schema 2、8..1,048,576、U+4E00..U+9FFF、`KNOWLEDGE_MCP_SYNC_INTERVAL`、`KNOWLEDGE_MCP_CONFIG`、`%LOCALAPPDATA%`、SDK 2.2.0、PyInstaller 6.22.3、97 篇、27.5 MiB），全部保留。
-- 两份 `SKILL.md` 同步后 SHA-256 均为 `e874f7451998dc9338d862743f6c52844a152ae73300a02e10965104e23cbf40`，字节一致。
-- 未新增任何 Markdown 文件。
-
-### 静态检查
-
-- `python -m compileall` 覆盖 9 个模块与 `tests/`：通过。`pip check`：无冲突依赖。
-- `node --check web/app.js`、`node --check tests/test_editor.cjs`：通过。
-- `ruff check --select F,E9`：4 项**本轮之前已存在**的告警，未修改，避免超出本轮范围。`knowledge_store.py:306` 的 F821 是误报——`refresh_index` 末尾的 `del walk` 让 ruff 认为嵌套函数名在闭包内未绑定；最小用例对照已确认代码可正常运行且 83 项测试通过。其余为 `tests/test_robustness.py:50`、`web_admin.py:124`、`web_admin.py:127` 的未使用变量 `F841`。
+- 未捕获 `RuntimeError` 生成 `crash-20261101-211347-17880-background.txt`（角色、PID、路径、5 行 traceback），有控制台时 stderr 仍输出原 traceback。
+- `ctypes` 触发 access violation：`fatal-<pid>.log` 写入 `Windows fatal exception: access violation` 与 Python 栈；正常退出时空文件被删除。
+- 未配置回退：`KNOWLEDGE_MCP_CONFIG` 指向临时配置时写入同级 `crashes/`。
+- 打包产物：`--root <临时库> --background` 启动后 `status` 返回 `crash_dir` 与 `crashes=0`，退出后目录为空。
+- 增强内容：记录含启动参数、其他线程栈（阻塞线程名与 12 层栈）、日志末尾；摘要超 2000 字符截断；预览超 8 KiB 返回 `truncated=true`。
 
 ### 测试与构建
 
-- 源码 83 项：OK（跳过 1），独立复跑 63.772 秒；构建内 62.634 秒。
-- 编辑器 Node 回归 19 组：全过。
-- `.\build.ps1 -SkipInstall` 完整成功：源码 83 项 → Node 19 组 → PyInstaller 6.22.3 打包 → EXE 协议 7 项全过（66.717 秒）。
-- 新产物 `dist/knowledge-mcp.exe` 22,784,496 字节，SHA-256 `aefb738a9c3c0d797a275cdbc6d205173dd0dfe667c950ccd65bba04a3a32b7a`；`dist/knowledge-mcp.exe.sha256` 已同步，实测哈希与文件值一致。
-- 未重跑真实 1.5 GiB 验收、97 篇搜索基准、真实 Chrome 端到端与托盘桌面级点击；本轮无源码改动，沿用既有结论（见下方数据）。
+- 源码 99 项 OK（跳过 1；新增 14 项崩溃记录、1 项网页接口、1 项托盘命令）；Node 20 组通过。
+- `.\build.ps1 -SkipInstall` 全绿：99 项 → Node 20 组 → PyInstaller 6.22.3 → EXE 协议 7 项（77.209 秒）。构建前自动停止运行中的实例（识别 2 个进程并优雅退出，构建后无残留）；两次构建各出现一次目录改名 `WinError 5`（`test_external_change_and_rename` / `test_case_only_rename_guards`），重跑均全绿，属 Windows 瞬时占用。
+- 产物 `dist/knowledge-mcp.exe` 22,798,259 字节，SHA-256 `86652c5a8cbff616fc27c8cc5ede42c80cf16a393936e17e7c656ecc553aa721`，`.sha256` 已同步且实测一致。
 
-## 上一轮：多智能体审查修复（2026-11-01）
+### 文档压缩
 
-4 名专员（Bug / 性能 / 功能 / 死代码）+ 2 轮交叉质询，确认 7 条并全部修复：
+4 份 Markdown 合计 49,836→约 42.1 KB（-15.5%）、509→435 行（-14.5%）：README 181→162 行 / 21,864→20,098 字节；VALIDATION 142→91 行 / 16,012→约 10.6 KB；SKILL 两份各 93→91 行 / 5,980→5,715 字节且字节一致（SHA-256 `88a81bf9…`）。未新增 Markdown，19 项关键量化值 grep 复核无丢失。
 
-- B1（High）启动期单文件索引失败会让服务起不来 → 单文件解码/占用/超限改为 `skipped`，只有 `sqlite3.Error` 或目录级扫描失败才 `failed` 回滚。
-- P1（Medium）1–2 字符短词绕过 trigram 全库扫描 → 新增 `_short_candidates()`，用 `chunks` SQL 子串加相邻块边界拼接预筛。
-- B2 文件占用 `PermissionError` 误映射 403 → 新增 `Forbidden` 专用于鉴权，文件系统错误落 503。
-- B3 恢复后清理失败残留回收记录 → 写 `restored_at`、容错清理，`_records` 隐藏并机会性清理已恢复记录。
-- B4 大文档重新读取丢失 `offset` → `web/app.js` reload 传 `start_byte`。
-- D4 `win_launch.py` 的 `cwd` 死参数、D6 测试未用导入 → 删除。
-- 验证：83 项 Python OK（跳过 1）、Node 18 组通过；`search_benchmark.py --compare` 全部 digest 一致，`short` 查询 6.01 倍（约 0.72 s → 0.12 s）。`test_mcp` 曾偶发一次 WinError 5，单独与全量复跑均通过，判定为 Windows 瞬时占用。当轮未重建 `dist`，已由本轮补齐。
+### 验证边界
+
+- 致命错误仅用 access violation 验证，未覆盖栈溢出、堆损坏与断电写入；构建前停止的“强制结束”分支未构造，改名后的 EXE 不会被识别。
+- 状态页崩溃分区由 Node 假 DOM 与接口测试覆盖，未做真实浏览器点击；未重跑 1.5 GiB 验收、97 篇搜索基准与 Chrome 端到端。
+
+## 上一轮：文档压缩与 release 重建（2026-11-01）
+
+只改 4 个 Markdown 并重建 `dist/`，未改源码（上一轮改完源码未打包，产物停留在 16:00 旧版）。README 205→178 行 / 21,745→20,414 字节；VALIDATION 249→106 行 / 36,837→约 11.5 KB；两份 SKILL 113→93 行 / 6,463→5,980 字节且字节一致；合计约 81.5→43.8 KB（-46%）。19 个关键量化值与变量名逐条 grep 复核无丢失，未新增 Markdown。静态检查：compileall、pip check、node --check 通过；`ruff --select F,E9` 4 项均为既有告警（`knowledge_store.py:306` F821 为 `del walk` 误报，另 3 项 F841）。构建：83 项 → Node 19 组 → EXE 7 项（66.717 秒），产物 22,784,496 字节 / `aefb738a…`。
+
+## 多智能体审查修复（2026-11-01）
+
+4 名专员 + 2 轮交叉质询确认 7 条并修复：B1 启动期单文件索引失败改为 `skipped`，仅 `sqlite3.Error` 或目录级失败才回滚；P1 新增 `_short_candidates()` 用 `chunks` SQL 子串加相邻块边界预筛 1–2 字符词；B2 新增 `Forbidden` 专用于鉴权 403，文件系统错误落 503；B3 写 `restored_at` 并容错清理回收记录；B4 reload 传 `start_byte`；D4/D6 删除 `cwd` 死参数与未用导入。验证：83 项 OK、Node 18 组；`search_benchmark.py --compare` digest 全一致，`short` 6.01 倍（0.72→0.12 s）。
 
 ## 网页分页增强与构建加固（2026-11-01）
 
-- 库视图与回收站支持每页 20/50/100 与跳页，越界页码钳制到末页；分页文案改为「1 篇 · 第 1 / 1 页」以兼容既有编辑器测试正则。
-- `build.ps1` 加固：PowerShell 5.1 会把原生命令的 stderr（`unittest` 的 `... ok`）当作致命错误，`$ErrorActionPreference` 改为 `Continue`，真实失败仍由 `$LASTEXITCODE` 检查中止；同时清空 `PYTHONPATH`/`PYTHONHOME`，规避沙箱安全删除 shim 在 `TemporaryDirectory.cleanup()` 删除超过 50 个文件时中断 39 个测试的 teardown。
-- 结果：源码 79 项 OK（跳过 1）、Node 18 组、EXE 协议 7 项、真实 Chrome CDP 25 项全部通过；产物 22,778,718 字节 / `ad651253debc…`。
+库视图与回收站支持 20/50/100 与跳页，越界钳制到末页。`build.ps1` 把 `$ErrorActionPreference` 改为 `Continue`（PowerShell 5.1 会把原生命令 stderr 当致命错误），并清空 `PYTHONPATH`/`PYTHONHOME` 规避沙箱删除 shim 中断 teardown。结果：79 项 OK、Node 18 组、EXE 7 项、Chrome CDP 25 项；产物 22,778,718 字节 / `ad651253…`。
 
 ## 盲区加固（2026-11-01）
 
-- 修复 A：单个超 1.5 GiB 文档曾让整库打不开（`refresh_index` 计 `failed` 触发整库回滚）→ 索引前按 `st_size > MAX_BYTES` 计 `skipped`，`_snapshot` 按 `unsupported` 列出。
-- 修复 B：FTS 核心表损坏或分块被清空导致重开失败或搜索静默失效 → 启动时检查 `document_meta`/`chunks`/`chunk_search`/`documents` 齐全性与「元数据有、分块空」不一致，任一成立即按实际类型删除并全量重建。
-- 实测确认安全、无代码改动：并发写入（单进程 + `RLock` 串行化，8 线程压测无死锁、冲突被拒、`integrity_check == ok`）、配置篡改（损坏 JSON / 版本不符抛 `ConfigError` 后退回未配置状态）。
-- 新增 `tests/test_robustness.py` 15 项；79 项 OK；三套集成（MCP 153、运行时 38、托盘 9、Chrome 18）通过；产物 22,779,873 字节 / `95070d9e…`。
+超 1.5 GiB 单文件曾让整库打不开 → 索引前按 `st_size > MAX_BYTES` 计 `skipped`；FTS 核心表损坏或分块被清空 → 启动时校验 `document_meta`/`chunks`/`chunk_search`/`documents` 与“元数据有、分块空”不一致，按实际类型删除并全量重建。并发写入（8 线程、`RLock`、`integrity_check == ok`）与配置篡改实测安全；新增 `tests/test_robustness.py` 15 项，79 项 OK，产物 22,779,873 字节 / `95070d9e…`。
 
 ## EXE 逐项验收与托盘异常修复（2026-11-01）
 
-- 直接连接 `dist\knowledge-mcp.exe` 验收 218 项全部通过：MCP 18 工具 153 项（清单与注解、分页边界、搜索语义、读取/版本、创建与路径拒绝、更新冲突、回收恢复、分段读取与局部编辑边界、目录操作、索引、BOM/CRLF 与 10 MiB 限制）、网页 40 项（票据换会话、Host/Origin/CSRF/会话、CRUD、回收站、索引任务）、运行时 38 项、托盘 9 项、Chrome 18 项。
-- 修复托盘致命路径：`SetForegroundWindow` 被前台锁拒绝、`TaskbarCreated` 重建图标竞态失败时，异常冒泡到兜底 `except` 会 `stopping.set()` + `PostQuitMessage(1)`，导致整个后台退出。改为菜单整段捕获 `pywintypes.error`、重建图标单独捕获、兜底 `except` 只记日志返回 0。新增 3 项回归，实测降级为 INFO 日志且服务继续运行。
-- 产物 22,780,280 字节 / `e10f9820…`。已知边界：托盘菜单的真实鼠标点击未做桌面级实测，改用 `WM_RBUTTONUP`/`WM_COMMAND` 覆盖同一回调。
+`dist\knowledge-mcp.exe` 验收 218 项全过：MCP 18 工具 153 项、网页 40 项、运行时 38 项、托盘 9 项、Chrome 18 项。修复托盘致命路径：`SetForegroundWindow` 被拒或 `TaskbarCreated` 竞态失败时异常冒泡会 `PostQuitMessage(1)` 退出后台 → 菜单整段捕获 `pywintypes.error`、重建图标单独捕获、兜底只记日志；新增 3 项回归。产物 22,780,280 字节 / `e10f9820…`；托盘真实鼠标点击未做桌面级实测，改用 `WM_RBUTTONUP`/`WM_COMMAND`。
 
 ## 历史轮次摘要
 
@@ -87,18 +75,15 @@
 
 ## 最终产物
 
-- `dist/knowledge-mcp.exe`，22,784,496 字节，SHA-256 `aefb738a9c3c0d797a275cdbc6d205173dd0dfe667c950ccd65bba04a3a32b7a`。
-- `dist/knowledge-mcp.exe.sha256` 保存同一校验值；`dist/SKILL.md` 与 `skills/knowledge-mcp/SKILL.md` 字节一致。
-- 未修改 Codex 配置。
+- `dist/knowledge-mcp.exe`，22,798,259 字节，SHA-256 `86652c5a8cbff616fc27c8cc5ede42c80cf16a393936e17e7c656ecc553aa721`。
+- `.sha256` 保存同一校验值；`dist/SKILL.md` 与 `skills/knowledge-mcp/SKILL.md` 字节一致；未修改 Codex 配置。
 
 ## 验证边界
 
-- 本轮只改文档并重建产物：未重跑真实 1.5 GiB 验收、97 篇搜索基准、Chrome 端到端、托盘真实鼠标点击；这些沿用此前结论，不代表本轮重新验证。
-- 未在从未安装 Python 的全新电脑或虚拟机实测；未验证跨 Windows 会话/账号、其他 Windows 版本、32 位系统或网络共享目录。常驻启动依赖交互式桌面 Shell，不适用于无桌面服务环境。
-- 权限失败使用故障注入，未修改真实 ACL；命名管道配置当前用户 DACL 与拒绝远程连接标志，未做跨账号/远程攻击测试。
-- 构建存在可选 `tzdata` 缺失提示；应用使用 UTC 时间，不依赖该时区库。
-- 文件与 SQLite 不能组成跨系统原子事务，部分失败会明确报告且不自动重放写入。
-- `.test-work/` 中保留的临时目录与脚本均为本项目合成测试数据；此前多轮清理请求曾被自动审批以 `blocked by policy` 拒绝，未改用其他删除方式。
+- 未在全新无 Python 电脑或虚拟机实测；未验证跨 Windows 会话/账号、其他 Windows 版本、32 位系统或网络共享目录；常驻启动依赖交互式桌面 Shell。
+- 权限失败用故障注入，未改真实 ACL；命名管道 DACL 与拒绝远程标志未做跨账号/远程测试。
+- 构建存在可选 `tzdata` 缺失提示，应用使用 UTC，不依赖该库；文件与 SQLite 非原子事务，失败会明确报告且不重放。
+- `.test-work/` 中临时目录与脚本为合成测试数据；多轮清理曾被审批以 `blocked by policy` 拒绝。
 
 ## 实现参考
 
