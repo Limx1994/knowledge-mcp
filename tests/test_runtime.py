@@ -117,8 +117,10 @@ class RuntimeTests(unittest.TestCase):
             stack.enter_context(patch('runtime.win32file.GetOverlappedResult'))
             stack.enter_context(patch('runtime.PipeChannel', return_value=channel))
             stack.enter_context(patch('runtime.threading.Thread', return_value=worker))
+            record = stack.enter_context(patch('runtime.crashlog.record_current'))
             with self.assertLogs('knowledge.runtime', level='ERROR'):
                 state.serve()
+        record.assert_called_once()
         self.assertTrue(state.stopping.is_set())
         self.assertEqual(state.workers, set())
         self.assertEqual(state.channels, set())

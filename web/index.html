@@ -66,6 +66,10 @@
     <h3>最近同步结果</h3><pre id="sync-report">暂无记录</pre>
     <h3>手动任务明细</h3><pre id="index-report">暂无记录</pre>
   </section>
+  <section class="index-section"><h2>崩溃记录</h2><p>未捕获的异常和致命错误会写入 <code id="crash-dir">…</code>，每个进程每次一份，最多保留 20 份；正常运行时不会有记录。</p>
+    <div class="actions"><button id="refresh-crashes">刷新</button><button id="clear-crashes" class="danger">清空记录</button></div>
+    <div id="crash-list" class="crash-list" aria-live="polite"></div>
+  </section>
 </section>
 </main>
 <dialog id="path-dialog"><form id="path-form"><h2 id="dialog-title"></h2><p id="dialog-description"></p><label for="path-input">相对 knowledge 的路径</label><input id="path-input" required autocomplete="off"><p class="hint">使用 / 分隔文件夹；文档以 .md 或 .txt 结尾。</p><div class="actions"><button type="button" id="dialog-cancel">取消</button><button class="primary">确定</button></div></form></dialog>

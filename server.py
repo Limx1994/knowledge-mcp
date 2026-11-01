@@ -5,6 +5,13 @@ import sys
 import sqlite3
 from typing import Any
 
+import crashlog
+
+# 先装异常钩子：窗口化 EXE 没有控制台，后续导入失败也必须留下记录。
+# 只在作为入口脚本时安装，后台延迟导入本模块不会把角色改回“启动”。
+if __name__ == '__main__':
+    crashlog.install('startup')
+
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -160,13 +167,30 @@ def main():
             if len(args) != 2 or args[0] != '--root':
                 raise StoreError('用法: knowledge-mcp.exe [--root <知识库绝对路径>]')
             root = args[1]
+    except StoreError as exc:
+        report_failure(f'服务失败: {exc}', background)
+        return 1
+    stdio = False
+    if not background:
+        try:
+            stdio = stdio_available()
+        except Exception:  # 探测失败按无标准输入处理，由启动器打开管理页面
+            stdio = False
+    role = 'background' if background else ('bridge' if stdio else 'launcher')
+    crashlog.install(role, root)
+    try:
         if background:
             run_background(root)
-        elif stdio_available():
+        elif stdio:
             return run_bridge(root)
         else:
             return launch_page(root)
+    except StoreError as exc:
+        # 用法错误、单例冲突、后台拒绝连接等可预期失败只做常规提示，不算崩溃。
+        report_failure(f'服务失败: {exc}', background)
+        return 1
     except Exception as exc:
+        crashlog.record_exception(role, exc)
         report_failure(f'服务失败: {exc}', background)
         return 1
     return 0

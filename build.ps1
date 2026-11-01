@@ -17,6 +17,40 @@ $env:TMP = $env:TEMP
 $env:PYTHONPATH = ''
 $env:PYTHONHOME = ''
 New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
+# 构建前结束正在运行的本项目 EXE：它占用 dist\knowledge-mcp.exe，并与 EXE 回归
+# 抢全局单例和命名管道，导致打包覆盖失败或测试连到旧后台。先让后台自己优雅退出，
+# 超时再强制结束；仍有残留则停止构建。
+function Stop-KnowledgeMcp {
+    $running = @(Get-Process -Name 'knowledge-mcp' -ErrorAction SilentlyContinue)
+    if ($running.Count -eq 0) { return }
+    Write-Host "检测到正在运行的 knowledge-mcp（$($running.Count) 个），先停止：" -ForegroundColor Yellow
+    foreach ($process in $running) {
+        $path = '(无法读取路径)'
+        try { if ($process.Path) { $path = $process.Path } } catch { }
+        Write-Host ("  PID {0}  {1}" -f $process.Id, $path)
+    }
+    if (Test-Path -LiteralPath $BuildPython) {
+        & $BuildPython -c "import runtime; runtime.control_request('', 'shutdown', timeout=2)" 2>&1 | Out-Null
+    }
+    $deadline = (Get-Date).AddSeconds(15)
+    while ($true) {
+        $left = @(Get-Process -Name 'knowledge-mcp' -ErrorAction SilentlyContinue)
+        if ($left.Count -eq 0 -or (Get-Date) -ge $deadline) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    $left = @(Get-Process -Name 'knowledge-mcp' -ErrorAction SilentlyContinue)
+    if ($left.Count -gt 0) {
+        Write-Warning "优雅退出超时，强制结束 $($left.Count) 个进程"
+        foreach ($process in $left) {
+            try { Stop-Process -Id $process.Id -Force -ErrorAction Stop }
+            catch { Write-Warning ("PID {0} 无法结束：{1}" -f $process.Id, $_.Exception.Message) }
+        }
+        Start-Sleep -Milliseconds 800
+    }
+    $left = @(Get-Process -Name 'knowledge-mcp' -ErrorAction SilentlyContinue)
+    if ($left.Count -gt 0) { throw '仍有 knowledge-mcp 进程在运行，请手动退出托盘后重试' }
+    Write-Host '已停止正在运行的知识库 MCP。'
+}
 $BuildPython = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $BuildPython)) {
     & $PythonExe -m venv (Join-Path $PSScriptRoot '.venv')
@@ -26,6 +60,7 @@ if (-not $SkipInstall) {
     & $BuildPython -m pip install --disable-pip-version-check -r requirements.lock
     if ($LASTEXITCODE -ne 0) { throw '依赖安装失败' }
 }
+Stop-KnowledgeMcp
 & $BuildPython -m unittest discover -s tests -v
 if ($LASTEXITCODE -ne 0) { throw '源码测试失败，停止打包' }
 $NodeCommand = Get-Command node -ErrorAction SilentlyContinue

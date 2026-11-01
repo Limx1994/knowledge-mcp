@@ -22,6 +22,7 @@ import uvicorn
 
 from knowledge_store import KnowledgeStore, StoreError, FULL_BYTES
 from config import ConfigError, config_path, save_root
+import crashlog
 
 LOGGER = logging.getLogger('knowledge.web')
 ASSETS = Path(__file__).resolve().parent / 'web'
@@ -59,6 +60,11 @@ class SetupRequest(BaseModel):
     create: bool = False
 
 
+class CrashRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    action: Literal['clear']
+
+
 class WebAdmin:
     def __init__(self, state, port=0):
         self.state = state
@@ -77,6 +83,7 @@ class WebAdmin:
             Route('/api/session', self.session, methods=['GET', 'POST']),
             Route('/api/setup', self.setup, methods=['GET', 'POST']),
             Route('/api/status', self.status),
+            Route('/api/crashes', self.crashes, methods=['GET', 'POST']),
             Route('/api/tree', self.tree, methods=['GET', 'POST']),
             Route('/api/documents', self.documents, methods=['GET', 'POST']),
             Route('/api/trash', self.trash, methods=['GET', 'POST']),
@@ -237,6 +244,19 @@ class WebAdmin:
     async def status(self, request):
         return JSONResponse(await anyio.to_thread.run_sync(self.state.status))
 
+    def current_root(self):
+        store = self.state.store
+        return store.root if store is not None else None
+
+    async def crashes(self, request):
+        root = self.current_root()
+        if request.method == 'GET':
+            items = await anyio.to_thread.run_sync(lambda: crashlog.records(5, root))
+            return JSONResponse(dict(ok=True, dir=str(crashlog.crash_folder(root)), items=items))
+        CrashRequest.model_validate(await self.body(request))
+        removed = await anyio.to_thread.run_sync(lambda: crashlog.clear(root))
+        return JSONResponse(dict(ok=True, removed=removed))
+
     async def documents(self, request):
         store = self.store()
         if request.method == 'GET':
@@ -328,8 +348,9 @@ class WebAdmin:
         def run():
             try:
                 asyncio.run(self.server.serve(sockets=[self.socket]))
-            except Exception:
+            except Exception as exc:
                 LOGGER.exception('本地网页服务失败')
+                crashlog.record_current(exc, note='本地网页服务失败，服务停止')
                 self.state.request_stop()
         self.thread = threading.Thread(target=run, daemon=True)
         self.thread.start()

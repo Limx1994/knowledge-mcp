@@ -1,4 +1,5 @@
 from pathlib import Path
+import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
@@ -7,7 +8,7 @@ import pywintypes
 import win32con
 import win32gui
 
-from tray import TrayIcon, OPEN_PAGE, EXIT_APP
+from tray import TrayIcon, OPEN_CRASHES, OPEN_PAGE, EXIT_APP
 
 
 class TrayTests(unittest.TestCase):
@@ -41,6 +42,24 @@ class TrayTests(unittest.TestCase):
         finally:
             tray.close()
             win32gui.PumpWaitingMessages()
+
+
+    def test_crash_folder_command(self):
+        state = Mock()
+        state.stopping = threading.Event()
+        with tempfile.TemporaryDirectory() as temp:
+            state.store.root = Path(temp)
+            tray = TrayIcon(state)
+            try:
+                with patch('tray.os.startfile') as startfile:
+                    win32gui.SendMessage(tray.window, win32con.WM_COMMAND, OPEN_CRASHES, 0)
+                startfile.assert_called_once()
+                opened = Path(startfile.call_args[0][0])
+                self.assertEqual(opened, Path(temp) / '.data' / 'crashes')
+                self.assertTrue(opened.is_dir())
+            finally:
+                tray.close()
+                win32gui.PumpWaitingMessages()
 
 
     def test_menu_foreground_failure_keeps_service(self):

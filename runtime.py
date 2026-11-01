@@ -25,6 +25,7 @@ from mcp.types import JSONRPCMessage
 from pydantic import TypeAdapter
 
 from config import ConfigError, config_path, load_config
+import crashlog
 from knowledge_store import KnowledgeStore, StoreError, check_link
 
 PIPE_NAME = r'\\.\pipe\LocalKnowledgeMcp.Service.v1'
@@ -178,6 +179,8 @@ class ServiceState:
         self.tray = None
 
     def status(self):
+        root = self.store.root if self.store is not None else None
+        crash = dict(crash_dir=str(crashlog.crash_folder(root)), crashes=crashlog.count(root))
         with self.guard:
             store = self.store
             common = dict(ok=True, pid=os.getpid(),
@@ -186,7 +189,7 @@ class ServiceState:
                           web_url=self.web.base_url if self.web else None,
                           tray_window=self.tray.window if self.tray else None,
                           config_path=str(config_path()), config_error=self.config_error,
-                          configuring=self.configuring)
+                          configuring=self.configuring, **crash)
             if store is None:
                 return dict(common, configured=False, root=None, documents=0,
                             database_bytes=0, last_sync=None)
@@ -239,8 +242,9 @@ class ServiceState:
                         self.channels.discard(channel)
                         channel.close()
                         raise
-        except Exception:
+        except Exception as exc:
             LOGGER.exception('命名管道监听失败')
+            crashlog.record_current(exc, note='命名管道监听失败，服务停止')
             self.request_stop()
 
     def handle(self, channel):
@@ -347,17 +351,10 @@ class ServiceState:
 
 
 def configure_logging(root):
-    folder = None
-    if root:
-        candidate = Path(root) / '.data'
-        if candidate.parent.is_dir():
-            folder = candidate
-    if folder is None:
-        folder = config_path().parent
-        folder.mkdir(parents=True, exist_ok=True)
+    folder = crashlog.data_folder(root)
     if folder.exists():
         check_link(folder)
-    folder.mkdir(exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True)
     path = folder / 'service.log'
     if path.exists():
         check_link(path)
@@ -388,6 +385,8 @@ def run_background(root):
                 config_error = str(exc)
                 root = None
         configure_logging(root)
+        # 常驻后台没有控制台：访问冲突、栈溢出等致命错误只能靠 faulthandler 留证。
+        crashlog.enable_fatal(root)
         state = ServiceState()
         state.config_error = config_error
         if root:

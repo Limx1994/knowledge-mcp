@@ -346,8 +346,24 @@ function renderReport(target, report) {
 async function updateStatus() {
   const status = await api('/api/status'); $('connection').textContent = `后台运行中 · ${status.connections} 个 MCP 连接`;
   const list = $('service-status'); list.replaceChildren();
-  for (const [key, value] of [['知识库位置', status.root], ['后台状态', status.stopping ? '正在退出' : '运行中'], ['文档数量', status.documents], ['数据库大小', formatBytes(status.database_bytes)], ['MCP 连接数', status.connections], ['最近同步', status.last_sync?.completed_at ? new Date(status.last_sync.completed_at).toLocaleString('zh-CN') : '暂无记录']]) list.append(element('dt', key), element('dd', String(value)));
+  for (const [key, value] of [['知识库位置', status.root], ['后台状态', status.stopping ? '正在退出' : '运行中'], ['文档数量', status.documents], ['数据库大小', formatBytes(status.database_bytes)], ['MCP 连接数', status.connections], ['崩溃记录', status.crashes ? `${status.crashes} 份` : '无'], ['最近同步', status.last_sync?.completed_at ? new Date(status.last_sync.completed_at).toLocaleString('zh-CN') : '暂无记录']]) list.append(element('dt', key), element('dd', String(value)));
   renderReport($('sync-report'), status.last_sync);
+}
+async function loadCrashes() {
+  const result = await api('/api/crashes');
+  $('crash-dir').textContent = result.dir;
+  const list = $('crash-list'); list.replaceChildren();
+  $('clear-crashes').disabled = result.items.length === 0;
+  if (!result.items.length) { list.append(element('p', '没有崩溃记录。', 'empty')); return; }
+  for (const item of result.items) {
+    const details = element('details', undefined, 'crash-record');
+    const summary = element('summary');
+    const when = item.created ? item.created.replace('T', ' ').slice(0, 19) : '未知时间';
+    summary.append(element('strong', `${when} · ${item.role_label}`), element('small', item.error));
+    details.append(summary, element('pre', item.text));
+    if (item.truncated) details.append(element('p', '预览已截断，完整内容见记录文件。', 'hint'));
+    list.append(details);
+  }
 }
 async function loadIndex() {
   const job = await api('/api/index'); const running = job.state === 'running';
@@ -368,7 +384,7 @@ async function switchView(view) {
   notice('');
   if (view === 'library') { await loadTree(); await loadDocuments(); }
   if (view === 'trash') await loadTrash();
-  if (view === 'status') { await updateStatus(); await loadIndex(); }
+  if (view === 'status') { await updateStatus(); await loadIndex(); await loadCrashes(); }
 }
 $('editor').addEventListener('input', () => { state.dirty = true; updateEditor(); });
 $('save').onclick = () => action(saveDocument);
@@ -387,6 +403,12 @@ $('new-folder').onclick = () => action(newFolder);
 $('move-folder').onclick = () => action(moveFolder);
 $('delete-folder').onclick = () => action(deleteFolder);
 $('refresh').onclick = () => action(async () => { await loadTree(); await loadDocuments(); notice('目录与列表已刷新，编辑中的正文未被覆盖。'); });
+$('refresh-crashes').onclick = () => action(async () => { await loadCrashes(); await updateStatus(); notice('崩溃记录已刷新。'); });
+$('clear-crashes').onclick = () => action(async () => {
+  if (!confirm('清空全部崩溃记录？该操作不可恢复。')) return;
+  const result = await api('/api/crashes', {action: 'clear'});
+  await loadCrashes(); await updateStatus(); notice(`已清空 ${result.removed} 份崩溃记录。`);
+});
 $('search-form').onsubmit = event => { event.preventDefault(); state.offset = 0; action(loadDocuments); };
 $('recursive').onchange = () => { state.offset = 0; action(loadDocuments); };
 $('previous').onclick = () => { state.offset = Math.max(0, state.offset - state.limit); action(loadDocuments); };

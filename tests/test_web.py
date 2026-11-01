@@ -8,6 +8,7 @@ from unittest.mock import patch
 from starlette.testclient import TestClient
 
 from config import load_config
+import crashlog
 from knowledge_store import KnowledgeStore, StoreError
 from runtime import ServiceState
 from web_admin import WebAdmin
@@ -149,6 +150,23 @@ class WebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['total'], 1)
         self.assertEqual(response.json()['sync']['skipped'], 1)
+
+    def test_crash_records_api(self):
+        self.assertEqual(self.client.get('/api/crashes').json()['items'], [])
+        try:
+            raise ValueError('boom')
+        except ValueError as exc:
+            crashlog.record_exception('bridge', exc, root=self.root)
+        listed = self.client.get('/api/crashes').json()
+        self.assertEqual(listed['dir'], str(crashlog.crash_folder(self.root)))
+        self.assertEqual(len(listed['items']), 1)
+        self.assertIn('ValueError: boom', listed['items'][0]['error'])
+        self.assertIn('Traceback (most recent call last)', listed['items'][0]['text'])
+        denied = self.client.post('/api/crashes', json={'action': 'clear'})
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(self.client.post('/api/crashes', json={'action': 'list'}, headers=self.headers).status_code, 400)
+        self.assertEqual(self.post('/api/crashes', action='clear')['removed'], 1)
+        self.assertEqual(self.client.get('/api/crashes').json()['items'], [])
 
     def test_file_permission_error_is_503(self):
         created = self.post('/api/documents', action='create', path='a.md', content='x')

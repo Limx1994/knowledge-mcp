@@ -1,5 +1,6 @@
 """Native Windows notification-area icon and lifecycle menu."""
 import logging
+import os
 from pathlib import Path
 import webbrowser
 
@@ -8,8 +9,11 @@ import win32con
 import win32gui
 import pywintypes
 
+import crashlog
+
 LOGGER = logging.getLogger('knowledge.tray')
 OPEN_PAGE = 1001
+OPEN_CRASHES = 1003
 EXIT_APP = 1002
 
 
@@ -65,6 +69,19 @@ class TrayIcon:
             except pywintypes.error as inner:
                 LOGGER.error('提示框显示失败: %s', inner)
 
+    def open_crashes(self):
+        folder = None
+        try:
+            folder = crashlog.crash_folder(getattr(self.state.store, 'root', None))
+            folder.mkdir(parents=True, exist_ok=True)
+            os.startfile(folder)
+        except OSError as exc:
+            LOGGER.error('打开崩溃记录目录失败: %s', type(exc).__name__)
+            try:
+                win32gui.MessageBox(self.window, f'无法打开崩溃记录目录：{folder}', '知识库 MCP', win32con.MB_ICONERROR)
+            except pywintypes.error as inner:
+                LOGGER.error('提示框显示失败: %s', inner)
+
     def on_message(self, window, message, wparam, lparam):
         try:
             if message == self.taskbar_message:
@@ -84,6 +101,7 @@ class TrayIcon:
                         menu = win32gui.CreatePopupMenu()
                         try:
                             win32gui.AppendMenu(menu, win32con.MF_STRING, OPEN_PAGE, '打开管理页面')
+                            win32gui.AppendMenu(menu, win32con.MF_STRING, OPEN_CRASHES, '崩溃记录')
                             win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, '')
                             win32gui.AppendMenu(menu, win32con.MF_STRING, EXIT_APP, '退出')
                             x, y = win32gui.GetCursorPos()
@@ -100,6 +118,8 @@ class TrayIcon:
                 command = win32api.LOWORD(wparam)
                 if command == OPEN_PAGE:
                     self.open_page()
+                elif command == OPEN_CRASHES:
+                    self.open_crashes()
                 elif command == EXIT_APP:
                     self.state.request_stop()
                 return 0

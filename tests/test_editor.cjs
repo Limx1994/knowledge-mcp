@@ -241,8 +241,32 @@ async function testSetupView() {
   assert.equal(getNode('setup-error').hidden, false);
 }
 
+async function testCrashList() {
+  const {run, requests, getNode} = setup();
+  const pending = run('loadCrashes()');
+  requests[0].respond({ok: true, dir: 'D:/kb/.data/crashes', items: [
+    {created: '2026-11-01T21:00:00+08:00', role: 'background', role_label: '常驻后台', truncated: true,
+      error: 'ValueError: boom', text: '记录时间: 2026-11-01 21:00:00 +0800\n异常: ValueError: boom'}
+  ]});
+  await pending;
+  assert.equal(getNode('crash-dir').textContent, 'D:/kb/.data/crashes');
+  assert.equal(getNode('clear-crashes').disabled, false);
+  const record = getNode('crash-list').children[0];
+  assert.match(record.children[0].children[0].textContent, /2026-11-01 21:00:00 · 常驻后台/);
+  assert.equal(record.children[0].children[1].textContent, 'ValueError: boom');
+  assert.match(record.children[1].textContent, /ValueError: boom/);
+  assert.match(record.children[2].textContent, /预览已截断/);
+
+  const empty = setup();
+  const pendingEmpty = empty.run('loadCrashes()');
+  empty.requests[0].respond({ok: true, dir: 'D:/kb/.data/crashes', items: []});
+  await pendingEmpty;
+  assert.equal(empty.getNode('clear-crashes').disabled, true);
+  assert.match(empty.getNode('crash-list').children[0].textContent, /没有崩溃记录/);
+}
+
 async function main() {
-  for (const test of [testOpenSuccess, testOpenFailure, testStaleResponse, testListStaleResponse, testMutations, testMoveCancellation, testChunkNavigation, testChunkSave, testReloadChunkOffset, testSearchJump, testFreshDraftRename, testUnindexedHint, testSetupView]) {
+  for (const test of [testOpenSuccess, testOpenFailure, testStaleResponse, testListStaleResponse, testMutations, testMoveCancellation, testChunkNavigation, testChunkSave, testReloadChunkOffset, testSearchJump, testFreshDraftRename, testUnindexedHint, testSetupView, testCrashList]) {
     await test();
     console.log('PASS ' + test.name);
   }
