@@ -103,6 +103,11 @@ def build_server(store):
         """按回收记录恢复到原路径；拒绝覆盖已有文档，同步索引。"""
         return invoke(store.restore_document, record_id)
 
+    @mcp.tool(annotations=CHANGE)
+    def purge_document(record_id: str) -> dict[str, Any]:
+        """按回收记录永久删除内容与元数据，不可恢复；需先 list_deleted 取 record_id。"""
+        return invoke(store.purge_document, record_id)
+
     @mcp.tool(annotations=MAINTAIN)
     def refresh_index(full: bool = False) -> dict[str, Any]:
         """增量同步；full=true 强制重读全部文件，返回提交统计和问题清单。"""

@@ -2,7 +2,29 @@
 
 环境：Windows 10 Build 19045 x64、Python 3.14.6、SQLite 3.50.4、MCP SDK 2.2.0、PyInstaller 6.22.3、Node.js 22.22.2、Chrome 1440×900、Windows PowerShell 5.1。
 
-## 本轮：崩溃记录与构建加固（2026-11-01）
+## 本轮：回收站永久删除（2026-11-02）
+
+范围：改动 `knowledge_store.py`、`web_admin.py`、`server.py`、`web/*`、`tests/test_store.py`、`tests/test_web.py`、`tests/test_mcp.py`、`README.md`、`skills/knowledge-mcp/SKILL.md`；新增 2 个存储方法与 1 个 MCP 工具，工具总数 18→19。无新增依赖，索引 schema 不变。
+
+### 实现
+
+- 存储层：`purge_document(record_id)` 与 `purge_all_deleted()` 复用 `_records()` 与 `_cleanup_record()`；`_cleanup_record` 吞 `OSError`，故删除后用 `folder.exists()` 复检，残留转 `StoreError`（Windows 文件被占用时不再"假删除"）。ID 校验、`非法回收记录 ID`/`回收记录不存在` 措辞与 `restore_document` 一致；不触碰索引（软删除时已 `index='remove'`）。
+- 网页：`WriteRequest.action` 增加 `purge`/`purge_all`，`/api/trash` POST 由单分支改为字典分派（与 `/api/documents`、`/api/tree` 一致）。回收站每条记录加"永久删除"，标题区加"清空回收站"，均 `confirm()` 二次确认，清空按钮按 `total` 自动禁用；复用 `danger subtle` 类与 `api()/action()/notice()` 封装，未新增 CSS。
+- MCP：`purge_document(record_id)` 用 `CHANGE` 注解（`destructiveHint=true`），docstring 注明不可恢复与先 `list_deleted` 取 ID；不提供 `purge_all` 的 MCP 工具。
+
+### 测试与构建
+
+- 源码 103 项 OK（跳过 1；新增 4 项：`test_purge_document`、`test_purge_all_deleted`、`test_purge_cleanup_failure_raises`、`test_trash_purge`）；Node 20 组通过；`node --check web/app.js` 通过。
+- `.\build.ps1 -SkipInstall` 全绿：103 项 → Node 20 组 → PyInstaller 6.22.3 → EXE 协议 7 项（58.326 秒）。构建前识别 4 个运行中实例，2 个优雅退出、2 个超时强制结束。
+- 产物 `dist/knowledge-mcp.exe` 22,798,557 字节，SHA-256 `6eb1e5c76e91ef00344e77b5efcd72ff06253b89b3a837ab4f4ae41dfb69470b`，`.sha256` 已同步且实测一致。
+
+### 验证边界
+
+- 网页按钮由 Node 假 DOM 与接口测试覆盖，未做真实浏览器点击；`purge_all` 未做大批量（>100 条）压测。
+- Windows 文件占用分支用 `patch.object(Path, 'unlink')` 故障注入，未构造真实句柄占用。
+- `dist/SKILL.md` 与 `dist/安装与使用说明.md` 是手工副本，`build.ps1` 不同步，本次已手动更新（18→19 工具、新增 `purge_document`）。
+
+## 崩溃记录与构建加固（2026-11-01）
 
 范围：新增 `crashlog.py`、`tests/test_crashlog.py`；改动 `server.py`、`runtime.py`、`web_admin.py`、`tray.py`、`build.ps1`、`web/*`、`tests/test_web.py`、`tests/test_tray.py`、`tests/test_runtime.py`、`tests/test_editor.cjs`、`README.md`。无新增依赖，索引 schema 与 MCP 工具不变。
 
@@ -61,6 +83,7 @@
 
 | 日期 | 轮次 | 结论 |
 | --- | --- | --- |
+| 2026-11-02 | 回收站永久删除 | 新增 `purge_document` 工具与网页"永久删除/清空回收站"；工具 18→19；103 项 OK；产物 22,798,557 字节 / `6eb1e5c7…` |
 | 2026-10-31 | 无根启动与网页配置 | `--root` 变可选、新增 `config.py` 与 `/api/setup`；61 项 OK；产物 22,780,776 字节 / `845c6656…` |
 | 2026-10-31 | 实机试用问题修复 | 2,500 篇 + 100 MB 实测：列表 369→111 ms、目录树 1,802→219 ms、`list_entries` 1,928→218 ms、第 90 万行读取 824→118 ms、两字中文搜索 1,705→1,010 ms；300 个 PDF 时列表响应 25.9 KB→约 1 KB；重解析点改跳过；新增引号短语；54 项 OK；产物 22,771,316 字节 / `03c41052…` |
 | 2026-10-31 | 四项审查修复 | 路径同一性改用 `os.path.normcase`（`Straße.md` 与 `Strasse.md` 共存）；列表请求加序列号防旧响应覆盖；47 项 OK |

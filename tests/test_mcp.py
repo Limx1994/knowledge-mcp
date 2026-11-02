@@ -91,7 +91,7 @@ class ProtocolTests(unittest.TestCase):
             async def connect():
                 await barrier.wait()
                 async with Client(params, read_timeout_seconds=30) as client:
-                    self.assertEqual(len((await client.list_tools()).tools), 18)
+                    self.assertEqual(len((await client.list_tools()).tools), 19)
                     await barrier.wait()
                     status = await asyncio.to_thread(control_request, root, 'status')
                     self.assertEqual(status['connections'], 2)
@@ -189,7 +189,7 @@ class ProtocolTests(unittest.TestCase):
             params = StdioServerParameters(command=command, args=[*args, '--root', str(root)], cwd=TEMP, env=env)
             async with Client(params, read_timeout_seconds=30) as client:
                 tools = await client.list_tools()
-                self.assertEqual(len(tools.tools), 18)
+                self.assertEqual(len(tools.tools), 19)
                 other_root = Path(temp) / '另一个知识库'
                 other_root.mkdir()
                 duplicate = command
@@ -256,13 +256,13 @@ class ProtocolTests(unittest.TestCase):
                 await asyncio.to_thread(self.check_live_web, root)
                 self.assertEqual((await call('search_documents', query='跨接口'))['total'], 1)
                 async with Client(params, read_timeout_seconds=30) as second:
-                    self.assertEqual(len((await second.list_tools()).tools), 18)
+                    self.assertEqual(len((await second.list_tools()).tools), 19)
                     from runtime import control_request
                     self.assertEqual(control_request(root, 'status')['connections'], 2)
             from runtime import control_request
             first_pid = control_request(root, 'status')['pid']
             async with Client(params, read_timeout_seconds=30) as reconnected:
-                self.assertEqual(len((await reconnected.list_tools()).tools), 18)
+                self.assertEqual(len((await reconnected.list_tools()).tools), 19)
                 self.assertEqual(control_request(root, 'status')['pid'], first_pid)
                 found = await reconnected.call_tool('search_documents', {'query': '手动修改'})
                 self.assertEqual(found.structured_content['total'], 1)

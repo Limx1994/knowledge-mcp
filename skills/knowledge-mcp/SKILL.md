@@ -67,9 +67,10 @@ delete_directory                     # 仅空目录，不进回收站
 delete_document(path, expected_version)     # 进回收站，保留原内容
 list_deleted()                              # 查记录，拿 record_id
 restore_document(record_id)                 # 恢复原路径；同名冲突拒绝覆盖
+purge_document(record_id)                   # 永久删除，不可恢复
 ```
 
-删除前向用户确认；恢复冲突时先移动或改名同名文件。无递归删除、无回收站清空、无永久删除工具。
+删除前向用户确认；恢复冲突时先移动或改名同名文件。无递归删除、无回收站清空工具；`purge_document` 永久删除前必须明确征得用户同意。
 
 ## 工作流 5：索引维护
 

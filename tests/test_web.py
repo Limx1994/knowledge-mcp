@@ -61,6 +61,20 @@ class WebTests(unittest.TestCase):
         self.post('/api/trash', action='restore', record_id=records[0]['record_id'])
         self.assertEqual(self.store.read_full_document(created['path'])['content'], 'MCP 修改')
 
+    def test_trash_purge(self):
+        created = self.post('/api/documents', action='create', path='删除.md', content='永久删除测试')
+        self.post('/api/documents', action='delete', path='删除.md', expected_version=created['version'])
+        record = self.client.get('/api/trash').json()['items'][0]
+        result = self.post('/api/trash', action='purge', record_id=record['record_id'])
+        self.assertTrue(result['ok'])
+        self.assertEqual(self.client.get('/api/trash').json()['total'], 0)
+        created = self.post('/api/documents', action='create', path='清空.md', content='清空测试')
+        self.post('/api/documents', action='delete', path='清空.md', expected_version=created['version'])
+        self.assertEqual(self.post('/api/trash', action='purge_all')['removed'], 1)
+        unsupported = self.client.post('/api/trash', json={'action': 'create'}, headers=self.headers)
+        self.assertEqual(unsupported.status_code, 400)
+        self.assertIn('请求参数无效', unsupported.json()['error'])
+
     def test_gzip_and_line_chunk(self):
         content = '\n'.join(f'第 {i} 行 知识库' for i in range(60000))
         self.post('/api/documents', action='create', path='压缩.md', content=content)

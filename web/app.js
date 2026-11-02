@@ -311,9 +311,17 @@ async function loadTrash() {
     info.append(element('strong', record.path), element('small', `删除于 ${new Date(record.deleted_at).toLocaleString('zh-CN')}`));
     const button = element('button', '恢复原位置');
     button.onclick = () => action(async () => { button.disabled = true; try { await api('/api/trash', {action: 'restore', record_id: record.record_id}); notice('文档已恢复。'); await loadTrash(); } finally { button.disabled = false; } });
-    row.append(info, button); list.append(row);
+    const purge = element('button', '永久删除', 'danger subtle');
+    purge.onclick = () => action(async () => {
+      if (!confirm(`永久删除“${record.path}”？该操作不可恢复。`)) return;
+      purge.disabled = true;
+      try { await api('/api/trash', {action: 'purge', record_id: record.record_id}); notice('记录已永久删除。'); await loadTrash(); } finally { purge.disabled = false; }
+    });
+    const ops = element('div', undefined, 'actions'); ops.append(button, purge);
+    row.append(info, ops); list.append(row);
   }
   if (!result.items.length) list.append(element('div', '回收站为空。', 'empty'));
+  $('empty-trash').disabled = !result.total;
   $('trash-info').textContent = `共 ${result.total} 条记录`;
   $('trash-info').dataset.total = result.total;
   $('trash-jump').value = Math.floor(state.trashOffset / state.trashLimit) + 1;
@@ -417,6 +425,12 @@ $('page-size').onchange = () => { state.limit = Number($('page-size').value); st
 $('page-jump-btn').onclick = () => { const total = Number($('page-info').dataset.total || 0); const pages = Math.max(1, Math.ceil(total / state.limit)); const p = Math.min(pages, Math.max(1, Number($('page-jump').value) || 1)); state.offset = (p - 1) * state.limit; action(loadDocuments); };
 $('page-jump').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); $('page-jump-btn').click(); } };
 $('refresh-trash').onclick = () => action(loadTrash);
+$('empty-trash').onclick = () => action(async () => {
+  if (!confirm('清空回收站？全部记录将被永久删除，不可恢复。')) return;
+  const result = await api('/api/trash', {action: 'purge_all'});
+  state.trashOffset = 0;
+  await loadTrash(); notice(`已永久删除 ${result.removed} 条记录。`);
+});
 $('trash-previous').onclick = () => { state.trashOffset = Math.max(0, state.trashOffset - state.trashLimit); action(loadTrash); };
 $('trash-next').onclick = () => { state.trashOffset += state.trashLimit; action(loadTrash); };
 $('trash-page-size').onchange = () => { state.trashLimit = Number($('trash-page-size').value); state.trashOffset = 0; action(loadTrash); };

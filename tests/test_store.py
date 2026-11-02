@@ -291,6 +291,44 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(self.store.read_full_document('a.md')['content'], 'restore me')
             self.assertEqual(self.store.list_deleted()['total'], 0)
 
+    def test_purge_document(self):
+        item = self.add('a.md', 'purge me')
+        deleted = self.store.delete_document('a.md', item['version'])
+        result = self.store.purge_document(deleted['record_id'])
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['path'], 'a.md')
+        self.assertEqual(self.store.list_deleted()['total'], 0)
+        self.assertFalse((self.store.trash / deleted['record_id']).exists())
+        with self.assertRaises(StoreError):
+            self.store.purge_document(deleted['record_id'])
+        with self.assertRaises(StoreError):
+            self.store.purge_document('zz')
+
+    def test_purge_all_deleted(self):
+        for name in ('a.md', 'b.md', 'c.md'):
+            item = self.add(name, name)
+            self.store.delete_document(name, item['version'])
+        result = self.store.purge_all_deleted()
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['removed'], 3)
+        self.assertEqual(self.store.list_deleted()['total'], 0)
+        self.assertEqual(self.store.purge_all_deleted()['removed'], 0)
+
+    def test_purge_cleanup_failure_raises(self):
+        item = self.add('a.md', 'keep me')
+        deleted = self.store.delete_document('a.md', item['version'])
+        real_unlink = Path.unlink
+
+        def fail_content(path, *args, **kwargs):
+            if path.name == 'content':
+                raise OSError('locked')
+            return real_unlink(path, *args, **kwargs)
+
+        with patch.object(Path, 'unlink', fail_content):
+            with self.assertRaises(StoreError):
+                self.store.purge_document(deleted['record_id'])
+        self.assertEqual(self.store.list_deleted()['total'], 1)
+
     def test_short_query_cross_chunk(self):
         (self.store.docs / 'edge.md').write_bytes(b'x' * (1024 * 1024 - 1) + b'ne\n')
         self.assertEqual(self.store.search_documents('ne')['total'], 1)

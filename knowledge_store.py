@@ -1059,3 +1059,26 @@ class KnowledgeStore:
                 # opportunistic cleanup on the next list_deleted() call.
                 pass
             return self._written(meta['path'], version=info['version'])
+
+    def purge_document(self, record_id):
+        with self.guard:
+            if not re.fullmatch('[0-9a-f]{32}', record_id):
+                raise StoreError('非法回收记录 ID')
+            meta = next((r for r in self._records() if r['record_id'] == record_id), None)
+            if meta is None:
+                raise StoreError('回收记录不存在')
+            folder = self.trash / record_id
+            self._cleanup_record(folder)
+            if folder.exists():
+                raise StoreError('回收记录删除失败，文件可能被占用')
+            return dict(ok=True, path=meta['path'], record_id=record_id)
+
+    def purge_all_deleted(self):
+        with self.guard:
+            rows = self._records()
+            for meta in rows:
+                folder = self.trash / meta['record_id']
+                self._cleanup_record(folder)
+                if folder.exists():
+                    raise StoreError(f'回收记录删除失败，文件可能被占用: {meta["path"]}')
+            return dict(ok=True, removed=len(rows))

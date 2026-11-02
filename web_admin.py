@@ -34,7 +34,7 @@ class Forbidden(Exception):
 
 class WriteRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
-    action: Literal['create', 'update', 'delete', 'move', 'restore', 'patch']
+    action: Literal['create', 'update', 'delete', 'move', 'restore', 'patch', 'purge', 'purge_all']
     path: str = ''
     content: str = ''
     target: str = ''
@@ -313,9 +313,14 @@ class WebAdmin:
             limit = int(request.query_params.get('limit', 20))
             return JSONResponse(await anyio.to_thread.run_sync(lambda: store.list_deleted(offset, limit)))
         body = WriteRequest.model_validate(await self.body(request))
-        if body.action != 'restore':
-            raise ValueError('回收站仅支持恢复')
-        return JSONResponse(await anyio.to_thread.run_sync(lambda: store.restore_document(body.record_id)))
+        actions = {
+            'restore': lambda: store.restore_document(body.record_id),
+            'purge': lambda: store.purge_document(body.record_id),
+            'purge_all': store.purge_all_deleted,
+        }
+        if body.action not in actions:
+            raise ValueError('不支持的回收站操作')
+        return JSONResponse(await anyio.to_thread.run_sync(actions[body.action]))
 
     async def index(self, request):
         if request.method == 'GET':
