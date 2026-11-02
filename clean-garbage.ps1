@@ -5,8 +5,8 @@
 
 .DESCRIPTION
     清理三类目标：
-      1. .test-work 下的测试残留（合成语料、中断的大文件验收、EXE 移动副本）
-      2. 构建中间产物（build/、.cache/、.build-temp/）
+      1. .test-work 下的测试残留（合成语料、中断的大文件验收、EXE 移动副本、tmp* 临时目录）
+      2. 构建中间产物（build/、.cache/、.build-temp/、.ruff_cache/）
       3. Python 字节码缓存（__pycache__/、tests/__pycache__/）
 
     默认直接执行，先打印完整清单再逐个移入回收站。
@@ -86,7 +86,7 @@ if ([string]::IsNullOrWhiteSpace($Root)) {
 $Root = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\')
 
 # 只有这些顶层目录允许作为清理目标，防止手滑改列表删到源码
-$AllowedTop = @('.test-work', 'build', '.cache', '.build-temp', '__pycache__', 'tests')
+$AllowedTop = @('.test-work', 'build', '.cache', '.build-temp', '__pycache__', 'tests', '.ruff_cache')
 
 # ---------------------------------------------------------------- 目标清单
 $TestResidue = @(
@@ -111,6 +111,7 @@ $GeneratedTargets = @(
     @{ Path = 'build';       Kind = 'Dir'; Note = 'PyInstaller 中间产物（pkg / PYZ / toc / spec）' }
     @{ Path = '.cache';      Kind = 'Dir'; Note = 'pip 下载缓存' }
     @{ Path = '.build-temp'; Kind = 'Dir'; Note = '构建 TEMP 目录' }
+    @{ Path = '.ruff_cache'; Kind = 'Dir'; Note = 'ruff 静态检查缓存' }
 )
 
 $PyCacheTargets = @(
@@ -138,6 +139,18 @@ if (-not $SkipGenerated) {
 if ($PurgeAudit) {
     $Targets = @($Targets | Where-Object { $_.Path -notlike '.test-work\audit-20261031*' })
     $Targets += @{ Path = '.test-work\audit-20261031'; Kind = 'Dir'; Note = '全部审查过程产物（含报告与 CSV）' }
+}
+
+# 动态补充：.test-work 下除 audit-20261031 外的临时子目录（测试运行残留的临时库/缓存/索引）
+# 这些目录随测试随机生成（tmp* 或 search-* 等），无法硬编码，按需扫描当前项目实际存在的项。
+# audit-20261031 为审查报告目录，按 KeepList 默认保留。
+$TestWorkRoot = Join-Path $Root '.test-work'
+if (Test-Path -LiteralPath $TestWorkRoot) {
+    $twDirs = Get-ChildItem -LiteralPath $TestWorkRoot -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne 'audit-20261031' }
+    foreach ($d in $twDirs) {
+        $Targets += @{ Path = ('.test-work\' + $d.Name); Kind = 'Dir'; Note = '测试运行临时目录' }
+    }
 }
 
 # ---------------------------------------------------------------- 校验 + 统计
