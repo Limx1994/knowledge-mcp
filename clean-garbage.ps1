@@ -5,7 +5,9 @@
 
 .DESCRIPTION
     清理三类目标：
-      1. .test-work 下的测试残留（合成语料、中断的大文件验收、EXE 移动副本、tmp* 临时目录）
+      1. .test-work 下的过程/测试残留：递归删除除 *.md/*.csv/*.json 证据外的所有文件
+         （随机生成的 tmp*/search-* 目录、audit 内的 .log/.db/.lock/.cjs/.txt/.py 等），
+         删后剪枝空目录。默认保留审查证据。
       2. 构建中间产物（build/、.cache/、.build-temp/、.ruff_cache/）
       3. Python 字节码缓存（__pycache__/、tests/__pycache__/）
 
@@ -24,7 +26,8 @@
     跳过 build/、.cache/、.build-temp/、__pycache__/，只清理 .test-work 测试残留。
 
 .PARAMETER PurgeAudit
-    连 .test-work\audit-20261031 审查报告一起清理（默认保留该目录下的 md/csv/json/log）。
+    连 .test-work\audit-20261031 的审查证据（md/csv/json）一起清理；默认仅保留证据，
+    清理其余过程产物（.log/.db/.lock/.cjs/.txt/.py 等）并剪枝空目录。
 
 .EXAMPLE
     .\clean-garbage.ps1
@@ -136,20 +139,18 @@ if (-not $SkipGenerated) {
     $Targets += $PyCacheTargets
 }
 
-if ($PurgeAudit) {
-    $Targets = @($Targets | Where-Object { $_.Path -notlike '.test-work\audit-20261031*' })
-    $Targets += @{ Path = '.test-work\audit-20261031'; Kind = 'Dir'; Note = '全部审查过程产物（含报告与 CSV）' }
-}
-
-# 动态补充：.test-work 下除 audit-20261031 外的临时子目录（测试运行残留的临时库/缓存/索引）
-# 这些目录随测试随机生成（tmp* 或 search-* 等），无法硬编码，按需扫描当前项目实际存在的项。
-# audit-20261031 为审查报告目录，按 KeepList 默认保留。
+# 通用扫描：.test-work 下保留证据文件（*.md / *.csv / *.json），删除其余所有过程/测试产物。
+# 覆盖随机生成的测试残留（tmp* / search-* 等）、audit 内的 .log/.db/.lock/.cjs/.txt/.py 等，
+# 无需硬编码路径。-PurgeAudit 时连证据（md/csv/json）一并清理。
 $TestWorkRoot = Join-Path $Root '.test-work'
 if (Test-Path -LiteralPath $TestWorkRoot) {
-    $twDirs = Get-ChildItem -LiteralPath $TestWorkRoot -Directory -Force -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -ne 'audit-20261031' }
-    foreach ($d in $twDirs) {
-        $Targets += @{ Path = ('.test-work\' + $d.Name); Kind = 'Dir'; Note = '测试运行临时目录' }
+    $KeepExt = @('.md', '.csv', '.json')
+    if ($PurgeAudit) { $KeepExt = @() }
+    $twFiles = Get-ChildItem -LiteralPath $TestWorkRoot -Recurse -Force -File -ErrorAction SilentlyContinue |
+        Where-Object { $KeepExt -notcontains $_.Extension }
+    foreach ($f in $twFiles) {
+        $rel = $f.FullName.Substring($Root.Length + 1)
+        $Targets += @{ Path = $rel; Kind = 'File'; Note = '.test-work 非证据过程/测试产物' }
     }
 }
 
@@ -260,7 +261,9 @@ if ($DryRun) {
 # ---------------------------------------------------------------- 执行
 $running = Get-Process -Name 'knowledge-mcp' -ErrorAction SilentlyContinue
 if ($running) {
-    throw '检测到 knowledge-mcp.exe 正在运行，请先退出托盘程序再清理。'
+    Write-Line '警告：检测到 knowledge-mcp.exe 正在运行。' 'Yellow'
+    Write-Line '      清理目标均为构建/测试产物（.test-work / build / .cache / __pycache__ 等），' 'Yellow'
+    Write-Line '      已被白名单锁定，不会触碰运行时数据 .data/.trash，继续执行。' 'Yellow'
 }
 
 try {
@@ -315,6 +318,85 @@ foreach ($item in $Pending) {
         Write-Line ('  [已移入回收站] ' + $item.Relative) 'Green'
         if ($err) {
             Write-Line '         注意：调用返回异常但目标已移除（已知 0x80070002 行为，按成功处理）' 'DarkYellow'
+        }
+    }
+}
+
+# ---------------------------------------------------------------- 剪枝（仅非 DryRun）
+# 删除 .test-work 下已空的子目录（含其中的 .data 等临时目录）。
+# 证据 md/csv/json 所在目录不会为空，故不会被误删；循环至无可删空目录。
+if (-not $DryRun) {
+    $twRoot = Join-Path $Root '.test-work'
+    if (Test-Path -LiteralPath $twRoot) {
+        $again = $true
+        while ($again) {
+            $again = $false
+            $emptyDirs = Get-ChildItem -LiteralPath $twRoot -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+                Where-Object {
+                    (Get-ChildItem -LiteralPath $_.FullName -Force -File -ErrorAction SilentlyContinue).Count -eq 0 -and `
+                    (Get-ChildItem -LiteralPath $_.FullName -Force -Directory -ErrorAction SilentlyContinue).Count -eq 0
+                }
+            foreach ($d in $emptyDirs) {
+                try {
+                    $VB::DeleteDirectory($d.FullName, $UI, $RB, $Cancel)
+                    $again = $true
+                }
+                catch {
+                    Write-Line ('  [跳过空目录] ' + $d.FullName.Substring($Root.Length + 1)) 'DarkGray'
+                }
+            }
+        }
+    }
+}
+
+# 剪枝：删除 .test-work 下已空的子目录（含其中的 .data 等临时目录）。
+# 证据 md/csv/json 所在目录不会为空，故不会被误删；循环至无可删空目录。
+if (-not $DryRun) {
+    $twRoot = Join-Path $Root '.test-work'
+    if (Test-Path -LiteralPath $twRoot) {
+        $again = $true
+        while ($again) {
+            $again = $false
+            $emptyDirs = Get-ChildItem -LiteralPath $twRoot -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+                Where-Object {
+                    (Get-ChildItem -LiteralPath $_.FullName -Force -File -ErrorAction SilentlyContinue).Count -eq 0 -and `
+                    (Get-ChildItem -LiteralPath $_.FullName -Force -Directory -ErrorAction SilentlyContinue).Count -eq 0
+                }
+            foreach ($d in $emptyDirs) {
+                try {
+                    $VB::DeleteDirectory($d.FullName, $UI, $RB, $Cancel)
+                    $again = $true
+                }
+                catch {
+                    Write-Line ('  [跳过空目录] ' + $d.FullName.Substring($Root.Length + 1)) 'DarkGray'
+                }
+            }
+        }
+    }
+}
+
+# 剪枝：删除 .test-work 下已空的子目录（含其中的 .data 等临时目录）。
+# 证据 md/csv/json 所在目录不会为空，故不会被误删；循环至无可删空目录。
+if (-not $DryRun) {
+    $twRoot = Join-Path $Root '.test-work'
+    if (Test-Path -LiteralPath $twRoot) {
+        $again = $true
+        while ($again) {
+            $again = $false
+            $emptyDirs = Get-ChildItem -LiteralPath $twRoot -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+                Where-Object {
+                    (Get-ChildItem -LiteralPath $_.FullName -Force -File -ErrorAction SilentlyContinue).Count -eq 0 -and `
+                    (Get-ChildItem -LiteralPath $_.FullName -Force -Directory -ErrorAction SilentlyContinue).Count -eq 0
+                }
+            foreach ($d in $emptyDirs) {
+                try {
+                    $VB::DeleteDirectory($d.FullName, $UI, $RB, $Cancel)
+                    $again = $true
+                }
+                catch {
+                    Write-Line ('  [跳过空目录] ' + $d.FullName.Substring($Root.Length + 1)) 'DarkGray'
+                }
+            }
         }
     }
 }
