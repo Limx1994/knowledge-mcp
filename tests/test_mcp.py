@@ -1,5 +1,7 @@
 import asyncio
+import ctypes
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -34,7 +36,9 @@ def stop_service(root):
         else:
             control_request(root, 'shutdown')
     except pywintypes.error as exc:
-        if exc.winerror != 2:
+        # 2 = 管道已消失，后台已退出；231 = 管道实例暂时全忙，后台正在停止，
+        # 此时 status 拿不到但后台仍在运行，交给下面的单例等待收敛。
+        if exc.winerror not in (2, 231):
             raise
     for process in processes:
         try:
@@ -167,16 +171,48 @@ class ProtocolTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get('KNOWLEDGE_TEST_EXE'), '设置 KNOWLEDGE_TEST_EXE 验证打包产物')
     def test_moved_exe(self):
-        exe = Path(os.environ['KNOWLEDGE_TEST_EXE']).resolve()
+        # onedir 目录发行版：可移动、可重命名的单位是整个 knowledge-mcp 目录，
+        # exe 与同目录 _internal 必须一起搬，单独拷贝 exe 无法启动。
+        source = Path(os.environ['KNOWLEDGE_TEST_EXE']).resolve().parent
         with tempfile.TemporaryDirectory(dir=TEMP) as temp:
-            moved = Path(temp) / '带 空格的工具'
-            moved.mkdir()
-            target = moved / 'knowledge-mcp.exe'
-            shutil.copy2(exe, target)
-            asyncio.run(self.lifecycle(str(target), [], clean_env=True))
-            moved_again = Path(temp) / '再次移动.exe'
-            target.rename(moved_again)
-            asyncio.run(self.lifecycle(str(moved_again), [], clean_env=True))
+            moved = Path(temp) / '带 空格的工具' / 'knowledge-mcp'
+            shutil.copytree(source, moved)
+            self.wait_executable(moved / 'knowledge-mcp.exe')
+            asyncio.run(self.lifecycle(str(moved / 'knowledge-mcp.exe'), [], clean_env=True))
+            moved_again = Path(temp) / '再次移动'
+            moved.rename(moved_again)
+            asyncio.run(self.lifecycle(str(moved_again / 'knowledge-mcp.exe'), [], clean_env=True))
+
+    @unittest.skipUnless(os.environ.get('KNOWLEDGE_TEST_EXE'), '设置 KNOWLEDGE_TEST_EXE 验证打包产物')
+    def test_onedir_leaves_no_mei_residue(self):
+        # onedir 直接用 exe 旁的 _internal，不得再向系统临时目录解压 _MEI*；
+        # 单文件模式每次启动都会留下 36 MB 解压目录，被强杀时永久残留。
+        exe = Path(os.environ['KNOWLEDGE_TEST_EXE']).resolve()
+        self.assertTrue((exe.parent / '_internal').is_dir(),
+                        'onedir 产物缺少 _internal 目录，不能只分发 exe')
+        before = self.mei_dirs()
+        asyncio.run(self.lifecycle(str(exe), []))
+        self.assertEqual(self.mei_dirs(), before)
+
+    @staticmethod
+    def wait_executable(path, timeout=60):
+        """新建的 EXE 会被实时保护扫描，CreateProcess 期间返回 WinError 5；等到可独占打开。"""
+        kernel32 = ctypes.windll.kernel32
+        deadline = time.monotonic() + timeout
+        while True:
+            handle = kernel32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0x80, None)
+            if handle != -1:
+                kernel32.CloseHandle(handle)
+                return
+            if time.monotonic() >= deadline:
+                raise PermissionError(f'{path} 在 {timeout} 秒内仍被占用，无法执行')
+            time.sleep(0.5)
+
+    @staticmethod
+    def mei_dirs():
+        pattern = re.compile(r'^_MEI[0-9a-fA-F]{8}$')
+        return {entry.name for entry in Path(tempfile.gettempdir()).iterdir()
+                if entry.is_dir() and pattern.match(entry.name)}
 
     async def lifecycle(self, command, args, clean_env=False):
         with service_directory() as temp:
@@ -194,9 +230,10 @@ class ProtocolTests(unittest.TestCase):
                 other_root.mkdir()
                 duplicate = command
                 if clean_env:
-                    copy = Path(temp) / '另一个副本.exe'
-                    shutil.copy2(command, copy)
-                    duplicate = str(copy)
+                    copy = Path(temp) / '另一个副本'
+                    shutil.copytree(Path(command).parent, copy)
+                    duplicate = str(copy / 'knowledge-mcp.exe')
+                    self.wait_executable(duplicate)
                 result = await asyncio.to_thread(
                     subprocess.run, [duplicate, *args, '--root', str(other_root)],
                     input=b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n',
@@ -309,9 +346,12 @@ class ProtocolTests(unittest.TestCase):
                 try:
                     connect_pipe(0.2).close()
                 except pywintypes.error as exc:
+                    # 2 = 管道已消失，后台已退出；231 = 管道实例暂时全忙，
+                    # 后台正在停止，继续等而不是直接失败。
                     if exc.winerror == 2:
                         break
-                    raise
+                    if exc.winerror != 231:
+                        raise
                 if time.monotonic() > deadline:
                     raise AssertionError('后台未退出')
                 time.sleep(0.1)

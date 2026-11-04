@@ -13,7 +13,8 @@ import uuid
 from datetime import datetime, timezone
 
 from document_stream import (MAX_BYTES, FULL_BYTES, BLOCK_BYTES, BREAKS,
-                             inspect_file, read_block, copy_bytes, search_chunks)
+                             count_breaks, inspect_file, read_block, copy_bytes,
+                             search_chunks)
 
 
 # 读取前同步策略（仅影响性能，不改变写入路径）。
@@ -73,6 +74,16 @@ def is_reparse(entry):
         return True
     info = entry.stat(follow_symlinks=False)
     return bool(getattr(info, 'st_file_attributes', 0) & 0x400)
+
+
+# SQLite FTS5 trigram 的大小写折叠表与 Python str.lower() 不完全一致（实测覆盖
+# BMP 全部 1178 个有大小写变化字符）：这些大写字母的小写形式不会按预期进入索引，
+# 查询词含其中任何一个都会漏判，只能退回复核扫描。纯 ASCII 词不受影响——上述
+# 大写字母的小写形式都含非 ASCII 字符，纯 ASCII 查询不可能跨越它们命中。
+_AMBIGUOUS_FOLD = frozenset(
+    [0x019B, 0x025C, 0x0261, 0x0264, 0x026A, 0x026C, 0x0282, 0x0287, *range(0x029D, 0x029F), 0x03F3, 0x0529, 0x052B, 0x052D, 0x052F, *range(0x10D0, 0x10FB), *range(0x10FD, 0x1100), *range(0x13F8, 0x13FE), 0x1C8A, 0x1D8E, 0x2C5F, 0xA699, 0xA69B, 0xA794, 0xA797, 0xA799, 0xA79B, 0xA79D, 0xA79F, 0xA7B5, 0xA7B7, 0xA7B9, 0xA7BB, 0xA7BD, 0xA7BF, 0xA7C1, 0xA7C3, 0xA7C8, 0xA7CA, 0xA7CD, 0xA7D1, 0xA7D7, 0xA7D9, 0xA7DB, 0xA7F6, 0xAB53, *range(0xAB70, 0xABC0)])
+# 另一处不一致：İ 的 Python 小写是 "i" + 组合音符，只有完整序列才有漏判风险。
+_AMBIGUOUS_FOLD_SEQUENCE = 'i\u0307'
 
 
 class KnowledgeStore:
@@ -286,43 +297,50 @@ class KnowledgeStore:
                 elif include_issues:
                     report['issues_truncated'] = True
 
+            docs = self.docs
+            prefix = len(str(docs)) + 1
+
             def walk(folder):
                 try:
-                    check_link(folder)
+                    check_link(Path(folder))
                     with os.scandir(folder) as entries:
                         items = sorted(entries, key=lambda e: e.name)
                 except (OSError, StoreError) as exc:
                     issue(folder, exc)
                     return
                 for entry in items:
-                    file = Path(entry.path)
-                    rel = file.relative_to(self.docs).as_posix()
+                    # 相对路径用字符串切片得到：逐条目构造 Path 并 relative_to
+                    # 是同步慢的主要来源，未变文件尤其不必付这个代价。
+                    rel = entry.path[prefix:].replace('\\', '/')
                     try:
                         # A single junction or symlink must not block the whole library.
                         if is_reparse(entry):
                             issue(rel, '跳过重解析点', True)
                             continue
                         if entry.is_dir():
-                            walk(file)
+                            walk(entry.path)
                         elif os.path.splitext(entry.name)[1].lower() not in ('.md', '.txt'):
                             issue(rel, '不支持的扩展名', True)
                         else:
-                            # Syntax only; links were already rejected above.
-                            self._parts(rel)
                             key = path_key(rel)
                             if key in found:
                                 raise StoreError('路径大小写冲突')
                             found.add(key)
+                            info = entry.stat()
                             # 超大文档只跳过索引，不能让整个知识库打不开。
-                            if entry.stat().st_size > MAX_BYTES:
+                            if info.st_size > MAX_BYTES:
                                 issue(rel, '文档超过 1.5 GiB，已跳过索引', True)
                                 continue
-                            info = entry.stat()
                             prior = old.get(key)
-                            if not full and prior and prior['path'] == rel and prior['size'] == info.st_size and prior['mtime_ns'] == info.st_mtime_ns:
+                            if (not full and prior and prior['path'] == rel
+                                    and prior['size'] == info.st_size
+                                    and prior['mtime_ns'] == info.st_mtime_ns):
+                                # 路径与内容均未变：入索引时已校验过路径，跳过重复校验。
                                 report['unchanged'] += 1
                                 continue
-                            self._index_file(file, rel, full)
+                            # Syntax only; links were already rejected above.
+                            self._parts(rel)
+                            self._index_file(Path(entry.path), rel, full)
                             report['updated' if prior else 'added'] += 1
                     except sqlite3.Error as exc:
                         issue(rel, exc)
@@ -426,6 +444,24 @@ class KnowledgeStore:
 
     @staticmethod
     def _indexable(word):
+        """trigram 候选筛选可用。
+
+        trigram 分词器把非 NUL、非控制字符都作为 token 字符，并做 Unicode 大小写
+        折叠，因此重音拉丁、希腊、西里尔等字符都能走 trigram 索引；仅当查询词含
+        "折叠表与 Python lower 不一致"的字符时才退回复核扫描，避免漏判。
+        """
+        if '\x00' in word or any(ch < ' ' or ch == '\x7f' for ch in word):
+            return False
+        if word.isascii():
+            return True
+        if _AMBIGUOUS_FOLD_SEQUENCE in word:
+            return False
+        return not any(ch in _AMBIGUOUS_FOLD for ch in word)
+
+    @staticmethod
+    def _foldable(word):
+        """SQL lower() 只折叠 ASCII：短词 SQL 预筛仅对 ASCII 与无大小写的中日韩
+        文本安全；其余字符退回复核扫描，避免 SQLite 不折叠导致的漏判。"""
         return '\x00' not in word and all(
             char.isascii() or '\u4e00' <= char <= '\u9fff' for char in word)
 
@@ -494,7 +530,7 @@ class KnowledgeStore:
                                 if row['path'] not in candidates[gram]:
                                     candidate = False
                                     break
-                        elif self._indexable(word):
+                        elif self._foldable(word):
                             # Short words have no trigram; narrow candidates in
                             # SQL instead of scanning every document.
                             if word not in short_candidates:
@@ -641,7 +677,7 @@ class KnowledgeStore:
             line = 1
             if row:
                 prefix = row['content'].encode('utf-8')[:start - row['offset']].decode('utf-8')
-                line = row['start_line'] + len(BREAKS.findall(prefix))
+                line = row['start_line'] + count_breaks(prefix)
             return dict(path=meta['path'], content=data.decode('utf-8'), start_byte=start,
                         end_byte=end, next_offset=end, total_bytes=meta['size'], start_line=line,
                         version=meta['version'], bom=bool(meta['bom']), has_more=end < meta['size'], sync=sync)

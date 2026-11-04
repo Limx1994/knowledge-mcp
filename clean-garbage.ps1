@@ -4,12 +4,15 @@
     知识库项目垃圾清理：移入回收站，不做永久删除。
 
 .DESCRIPTION
-    清理三类目标：
+    清理四类目标：
       1. .test-work 下的过程/测试残留：递归删除除 *.md/*.csv/*.json 证据外的所有文件
          （随机生成的 tmp*/search-* 目录、audit 内的 .log/.db/.lock/.cjs/.txt/.py 等），
          删后剪枝空目录。默认保留审查证据。
       2. 构建中间产物（build/、.cache/、.build-temp/、.ruff_cache/）
       3. Python 字节码缓存（__pycache__/、tests/__pycache__/）
+      4. 系统 %TEMP% 下本项目历史 onefile 解压残留（_MEI???????? 目录，每个约 36 MB）。
+         打包已改为 onedir，运行期不再解压，这里只回收旧版遗留。按 web\book.ico 或
+         python314.dll + pywin32_system32 特征判定归属，避免误删其他程序的临时目录。
 
     默认直接执行，先打印完整清单再逐个移入回收站。
     加 -DryRun 只预览、不修改任何文件。
@@ -44,6 +47,8 @@
 [CmdletBinding()]
 param(
     [switch]$DryRun,
+    # 兼容保留：默认即执行，此开关无实际作用；保留是为了不破坏历史上
+    # 显式传入 -Execute 的调用（PowerShell 对未声明参数直接报错）。
     [switch]$Execute,
     [switch]$SkipGenerated,
     [switch]$PurgeAudit
@@ -92,23 +97,6 @@ $Root = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\')
 $AllowedTop = @('.test-work', 'build', '.cache', '.build-temp', '__pycache__', 'tests', '.ruff_cache')
 
 # ---------------------------------------------------------------- 目标清单
-$TestResidue = @(
-    @{ Path = '.test-work\large-uni4up71';                       Kind = 'Dir';  Note = '中断的大文件验收（1.5G md + 1.6G db + 1.55G journal）' }
-    @{ Path = '.test-work\audit-20261031\performance\large-run'; Kind = 'Dir';  Note = '大文件验收复现副本' }
-    @{ Path = '.test-work\review-performance';                   Kind = 'Dir';  Note = '402 个合成语料文件' }
-    @{ Path = '.test-work\search-rekjeldi';                      Kind = 'Dir';  Note = '99 个合成语料文件' }
-    @{ Path = '.test-work\tmpy7rszf6i';                          Kind = 'Dir';  Note = 'EXE 移动测试副本' }
-    @{ Path = '.test-work\tmpwoqs0jme';                          Kind = 'Dir';  Note = '临时测试库' }
-    @{ Path = '.test-work\tmpqx1uw712';                          Kind = 'Dir';  Note = '临时测试库' }
-    @{ Path = '.test-work\tmp7ngmqbzn';                          Kind = 'Dir';  Note = '临时测试库' }
-    @{ Path = '.test-work\tmpflinfqdk';                          Kind = 'Dir';  Note = '临时测试库' }
-    @{ Path = '.test-work\browser-review';                       Kind = 'Dir';  Note = '浏览器调试残留' }
-    @{ Path = '.test-work\debug-runtime';                        Kind = 'Dir';  Note = '运行时调试残留' }
-    @{ Path = '.test-work\review-bug';                           Kind = 'Dir';  Note = '缺陷复现残留' }
-    @{ Path = '.test-work\search-speed';                         Kind = 'Dir';  Note = '搜索速度测试残留' }
-    @{ Path = '.test-work\audit-20261031\_MEI0000433c2';         Kind = 'Dir';  Note = 'PyInstaller 解包空目录' }
-    @{ Path = '.test-work\search-build.log';                     Kind = 'File'; Note = '基准构建日志' }
-)
 
 $GeneratedTargets = @(
     @{ Path = 'build';       Kind = 'Dir'; Note = 'PyInstaller 中间产物（pkg / PYZ / toc / spec）' }
@@ -122,17 +110,49 @@ $PyCacheTargets = @(
     @{ Path = 'tests\__pycache__'; Kind = 'Dir'; Note = '测试字节码缓存' }
 )
 
+# ---------------------------------------------------------------- _MEI 残留
+# onefile 模式每次启动都会把运行时解压到系统临时目录的 _MEIxxxxxxxx（约 36 MB），
+# 进程被强杀或永不退出时 bootloader 来不及清理，形成永久残留。打包改为 onedir 后
+# 运行期不再解压，这里只回收历史遗留。这些目录不在项目内，不能走上面的
+# $Root / $AllowedTop 白名单校验，因此单独收集、单独处理。
+$MeiTargets = @()
+$MeiRoots = @([System.IO.Path]::GetTempPath().TrimEnd('\')) |
+    Where-Object { Test-Path -LiteralPath $_ } | Select-Object -Unique
+foreach ($tempRoot in $MeiRoots) {
+    foreach ($dir in Get-ChildItem -LiteralPath $tempRoot -Directory -Force -Filter '_MEI*' -ErrorAction SilentlyContinue) {
+        if ($dir.Name -notmatch '^_MEI[0-9a-fA-F]{8}$') { continue }
+        # 归属判据：完整解压含 web\book.ico；删到一半的半截残留至少同时含
+        # python314.dll 与 pywin32_system32。其他 PyInstaller 程序不满足这两条。
+        $complete = Test-Path -LiteralPath (Join-Path $dir.FullName 'web\book.ico') -PathType Leaf
+        $partial = (Test-Path -LiteralPath (Join-Path $dir.FullName 'python314.dll') -PathType Leaf) -and
+                   (Test-Path -LiteralPath (Join-Path $dir.FullName 'pywin32_system32') -PathType Container)
+        if (-not $complete -and -not $partial) { continue }
+        $files = @(Get-ChildItem -LiteralPath $dir.FullName -Recurse -Force -File -ErrorAction SilentlyContinue)
+        $size = 0
+        foreach ($f in $files) { $size += $f.Length }
+        $MeiTargets += [pscustomobject]@{
+            Relative = ('%TEMP%\' + $dir.Name)
+            Kind     = 'Dir'
+            Exists   = $true
+            Files    = $files.Count
+            SizeMB   = [math]::Round($size / 1MB, 1)
+            Note     = 'onefile 历史解压残留（onedir 后不再产生）'
+            Mei      = $true
+            Full     = $dir.FullName
+        }
+    }
+}
+
 $KeepList = @(
     '.test-work\audit-20261031\*.md / *.csv / *.json   审查报告与基线数据'
     '.test-work\large_acceptance.json / search-*.json  VALIDATION.md 引用的证据'
-    'dist\  交付产物（exe / sha256 / 预览截图）'
+    'dist\  交付产物（knowledge-mcp.exe / _internal / sha256 / 预览截图）'
     '.venv\ .data\ knowledge\ .trash\  构建环境与运行时数据'
     '*.py / web\ / tests\ / build.ps1 / make_icon.py  源码'
 )
 
 # ---------------------------------------------------------------- 组装
 $Targets = @()
-$Targets += $TestResidue
 
 if (-not $SkipGenerated) {
     $Targets += $GeneratedTargets
@@ -203,7 +223,7 @@ foreach ($t in $Targets) {
     }
 }
 
-$Pending    = @($Plan | Where-Object { $_.Exists })
+$Pending    = @($Plan | Where-Object { $_.Exists }) + @($MeiTargets | Where-Object { $_.Exists })
 $TotalMB    = 0
 $TotalFiles = 0
 foreach ($p in $Pending) {
@@ -256,6 +276,19 @@ if ($DryRun) {
     Write-Line '  .\clean-garbage.ps1' 'Green'
     Write-Line '提示：移入回收站不立即释放磁盘空间，需清空回收站后才真正腾出空间。' 'DarkYellow'
     return
+}
+
+# ---------------------------------------------------------------- _MEI 前置检查
+# 项目内产物（.test-work / build / .cache / __pycache__）与运行时数据无关，运行中仅警告；
+# _MEI 残留可能仍被旧版 onefile 实例加载着，强删会让运行中的服务崩溃，必须先退出服务。
+$MeiPending = @($Pending | Where-Object { $_.Mei })
+if ($MeiPending.Count -gt 0) {
+    $meiProcesses = @(Get-Process -Name 'knowledge-mcp' -ErrorAction SilentlyContinue)
+    if ($meiProcesses.Count -gt 0) {
+        Write-Line ("已中止：检测到 {0} 个 knowledge-mcp 进程正在运行，历史 _MEI 残留可能仍被加载。" -f $meiProcesses.Count) 'Red'
+        Write-Line '请先从托盘退出服务并关闭 MCP 客户端连接，再重试；本次未删除任何文件。' 'Red'
+        exit 1
+    }
 }
 
 # ---------------------------------------------------------------- 执行
@@ -324,58 +357,6 @@ foreach ($item in $Pending) {
 
 # ---------------------------------------------------------------- 剪枝（仅非 DryRun）
 # 删除 .test-work 下已空的子目录（含其中的 .data 等临时目录）。
-# 证据 md/csv/json 所在目录不会为空，故不会被误删；循环至无可删空目录。
-if (-not $DryRun) {
-    $twRoot = Join-Path $Root '.test-work'
-    if (Test-Path -LiteralPath $twRoot) {
-        $again = $true
-        while ($again) {
-            $again = $false
-            $emptyDirs = Get-ChildItem -LiteralPath $twRoot -Recurse -Force -Directory -ErrorAction SilentlyContinue |
-                Where-Object {
-                    (Get-ChildItem -LiteralPath $_.FullName -Force -File -ErrorAction SilentlyContinue).Count -eq 0 -and `
-                    (Get-ChildItem -LiteralPath $_.FullName -Force -Directory -ErrorAction SilentlyContinue).Count -eq 0
-                }
-            foreach ($d in $emptyDirs) {
-                try {
-                    $VB::DeleteDirectory($d.FullName, $UI, $RB, $Cancel)
-                    $again = $true
-                }
-                catch {
-                    Write-Line ('  [跳过空目录] ' + $d.FullName.Substring($Root.Length + 1)) 'DarkGray'
-                }
-            }
-        }
-    }
-}
-
-# 剪枝：删除 .test-work 下已空的子目录（含其中的 .data 等临时目录）。
-# 证据 md/csv/json 所在目录不会为空，故不会被误删；循环至无可删空目录。
-if (-not $DryRun) {
-    $twRoot = Join-Path $Root '.test-work'
-    if (Test-Path -LiteralPath $twRoot) {
-        $again = $true
-        while ($again) {
-            $again = $false
-            $emptyDirs = Get-ChildItem -LiteralPath $twRoot -Recurse -Force -Directory -ErrorAction SilentlyContinue |
-                Where-Object {
-                    (Get-ChildItem -LiteralPath $_.FullName -Force -File -ErrorAction SilentlyContinue).Count -eq 0 -and `
-                    (Get-ChildItem -LiteralPath $_.FullName -Force -Directory -ErrorAction SilentlyContinue).Count -eq 0
-                }
-            foreach ($d in $emptyDirs) {
-                try {
-                    $VB::DeleteDirectory($d.FullName, $UI, $RB, $Cancel)
-                    $again = $true
-                }
-                catch {
-                    Write-Line ('  [跳过空目录] ' + $d.FullName.Substring($Root.Length + 1)) 'DarkGray'
-                }
-            }
-        }
-    }
-}
-
-# 剪枝：删除 .test-work 下已空的子目录（含其中的 .data 等临时目录）。
 # 证据 md/csv/json 所在目录不会为空，故不会被误删；循环至无可删空目录。
 if (-not $DryRun) {
     $twRoot = Join-Path $Root '.test-work'

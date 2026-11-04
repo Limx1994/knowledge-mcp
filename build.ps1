@@ -17,7 +17,7 @@ $env:TMP = $env:TEMP
 $env:PYTHONPATH = ''
 $env:PYTHONHOME = ''
 New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
-# 构建前结束正在运行的本项目 EXE：它占用 dist\knowledge-mcp.exe，并与 EXE 回归
+# 构建前结束正在运行的本项目 EXE：它占用 dist\knowledge-mcp\knowledge-mcp.exe，并与 EXE 回归
 # 抢全局单例和命名管道，导致打包覆盖失败或测试连到旧后台。先让后台自己优雅退出，
 # 超时再强制结束；仍有残留则停止构建。
 function Stop-KnowledgeMcp {
@@ -74,11 +74,47 @@ if ($NodeCommand) {
 if ($LASTEXITCODE -ne 0) { throw '生成托盘图标失败' }
 $WebAssets = Join-Path $PSScriptRoot 'web'
 $TrayIcon = Join-Path $WebAssets 'book.ico'
-& $BuildPython -m PyInstaller --noconfirm --clean --onefile --windowed --icon $TrayIcon --add-data "${WebAssets};web" --name knowledge-mcp --distpath dist --workpath build --specpath build server.py
+& $BuildPython -m PyInstaller --noconfirm --clean --onedir --windowed --icon $TrayIcon --add-data "${WebAssets};web" --name knowledge-mcp --distpath dist --workpath build --specpath build server.py
 if ($LASTEXITCODE -ne 0) { throw 'EXE 打包失败' }
-$env:KNOWLEDGE_TEST_EXE = Join-Path $PSScriptRoot 'dist\knowledge-mcp.exe'
+# onedir 目录发行版：exe 与 _internal 必须同时存在，命令返回成功不等于产物完整。
+$DistRoot = Join-Path $PSScriptRoot 'dist\knowledge-mcp'
+$DistExe = Join-Path $DistRoot 'knowledge-mcp.exe'
+$DistInternal = Join-Path $DistRoot '_internal'
+if (-not (Test-Path -LiteralPath $DistExe -PathType Leaf) -or -not (Test-Path -LiteralPath $DistInternal -PathType Container)) {
+    throw "打包产物不完整：$DistRoot（必须同时包含 knowledge-mcp.exe 与 _internal\）"
+}
+# PyInstaller 刚写完 exe 时，实时保护可能仍在扫描该文件，此时 CreateProcess 会返回
+# ERROR_ACCESS_DENIED(5)，EXE 回归会假失败。等文件可独占读取后再启动回归。
+$Executable = $false
+foreach ($attempt in 1..60) {
+    try {
+        $stream = [System.IO.File]::Open($DistExe, 'Open', 'Read', 'None')
+        $stream.Close()
+        $Executable = $true
+        break
+    }
+    catch {
+        Start-Sleep -Milliseconds 500
+    }
+}
+if (-not $Executable) {
+    throw "打包产物 30 秒内仍被其他进程占用，无法启动 EXE 回归：$DistExe"
+}
+$env:KNOWLEDGE_TEST_EXE = $DistExe
 & $BuildPython -m unittest discover -s tests -p test_mcp.py -v
 if ($LASTEXITCODE -ne 0) { throw 'EXE 协议或移动验证失败' }
-$ExeHash = Get-FileHash -Algorithm SHA256 -LiteralPath $env:KNOWLEDGE_TEST_EXE
-Set-Content -LiteralPath "$($env:KNOWLEDGE_TEST_EXE).sha256" -Encoding ascii -Value "$($ExeHash.Hash.ToLowerInvariant())  knowledge-mcp.exe"
-$ExeHash
+# 不用 Get-FileHash：长时间构建后 PowerShell 的模块命令发现在本机反复失效
+# （CommandNotFoundException），改用 .NET 直接计算，避免把空哈希写进伴随文件。
+$sha = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $stream = [System.IO.File]::OpenRead($DistExe)
+    try { $bytes = $sha.ComputeHash($stream) }
+    finally { $stream.Close() }
+}
+finally { $sha.Dispose() }
+$Hash = [System.BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
+if ([string]::IsNullOrWhiteSpace($Hash)) {
+    throw "计算产物 SHA-256 失败：$DistExe"
+}
+Set-Content -LiteralPath "$DistExe.sha256" -Encoding ascii -Value "$Hash  knowledge-mcp.exe"
+Write-Host ("SHA256 " + $Hash)

@@ -2,6 +2,7 @@
 search, concurrent writes, crash recovery, and config tampering."""
 import json
 import os
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -20,10 +21,13 @@ from knowledge_store import KnowledgeStore, StoreError
 from config import ConfigError, load_config, save_root
 
 PYTHON = Path(sys.executable)
+TEMP = PROJECT / '.test-work'
+TEMP.mkdir(exist_ok=True)
 
 
 def make_root():
-    return Path(tempfile.mkdtemp(prefix='kb-robust-'))
+    # 与其他测试一致放在项目 .test-work 下，由各 tearDown 清理，不污染系统 %TEMP%。
+    return Path(tempfile.mkdtemp(prefix='kb-robust-', dir=TEMP))
 
 
 def write_doc(root, rel, text):
@@ -44,6 +48,7 @@ class OversizedTest(unittest.TestCase):
         store = getattr(self, 'store', None)
         if store is not None:
             store.close()
+        shutil.rmtree(self.root, ignore_errors=True)
 
     def test_oversized_document_skipped_not_fatal(self):
         write_doc(self.root, 'normal.md', '# 正常文档\n关键词 内容\n')
@@ -77,6 +82,7 @@ class LargeFileTest(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
+        shutil.rmtree(self.root, ignore_errors=True)
 
     def test_large_document_chunk_search_patch(self):
         # 约 4 MiB、4 万行，在深处埋一个唯一关键词。
@@ -135,6 +141,7 @@ class LargeCorpusTest(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
+        shutil.rmtree(self.root, ignore_errors=True)
 
     def test_search_correctness_and_ranking(self):
         start = time.time()
@@ -165,6 +172,7 @@ class ConcurrencyTest(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
+        shutil.rmtree(self.root, ignore_errors=True)
 
     def _worker(self, index):
         try:
@@ -206,8 +214,7 @@ class CrashRecoveryTest(unittest.TestCase):
         self.flag = self.root / 'ready.flag'
 
     def tearDown(self):
-        for p in self.root.glob('*'):
-            pass
+        shutil.rmtree(self.root, ignore_errors=True)
 
     def test_recovery_after_forced_kill(self):
         helper = self.root / '_crash_helper.py'
@@ -272,6 +279,7 @@ class IndexCorruptionTest(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
+        shutil.rmtree(self.root, ignore_errors=True)
 
     def _reopen_after(self, mutate):
         self.store.close()
@@ -304,13 +312,14 @@ class IndexCorruptionTest(unittest.TestCase):
 class ConfigTamperingTest(unittest.TestCase):
     def setUp(self):
         self.orig = os.environ.get('KNOWLEDGE_MCP_CONFIG')
-        self.dir = Path(tempfile.mkdtemp(prefix='kb-cfg-'))
+        self.dir = Path(tempfile.mkdtemp(prefix='kb-cfg-', dir=TEMP))
 
     def tearDown(self):
         if self.orig is None:
             os.environ.pop('KNOWLEDGE_MCP_CONFIG', None)
         else:
             os.environ['KNOWLEDGE_MCP_CONFIG'] = self.orig
+        shutil.rmtree(self.dir, ignore_errors=True)
 
     def _set_cfg(self, text):
         path = self.dir / 'config.json'

@@ -114,6 +114,44 @@ class StoreTests(unittest.TestCase):
         cross.write_bytes(b'x' * (1024 * 1024 - 3) + '稀有关键词\n'.encode())
         self.assertEqual(self.store.search_documents('稀有关键词')['total'], 4)
 
+    def test_non_ascii_words_keep_exact_semantics(self):
+        # P2-1 回归：trigram 快路径扩展到非 ASCII 字母后，命中结果必须与
+        # "Python lower 后逐篇复核"的语义一致（含大小写与 İ 组合形式）。
+        files = {
+            'accented.md': 'CAFÉ ÑOÑO ÜBER ÅRØ ÉCOLE naïve\n',
+            'greek.md': 'ΣΊΣΥΦΟΣ και Ελλάδα\n',
+            'cyrillic.md': 'ПРИВЕТ МИР привет\n',
+            'cjk.md': '中文 テスト 한국어\n',
+            'turkish.md': 'İabc istanbul\n',
+        }
+        for path, content in files.items():
+            (self.store.docs / path).write_text(content, encoding='utf-8')
+        self.assertTrue(self.store.refresh_index()['ok'])
+        expectations = [
+            ('café', ['accented.md']),
+            ('CAFÉ', ['accented.md']),
+            ('ñoño', ['accented.md']),
+            ('über', ['accented.md']),
+            ('école', ['accented.md']),
+            ('naïve', ['accented.md']),
+            ('σίσυφος', ['greek.md']),
+            ('ελλάδα', ['greek.md']),
+            ('привет', ['cyrillic.md']),
+            ('мир', ['cyrillic.md']),
+            ('テスト', ['cjk.md']),
+            ('한국어', ['cjk.md']),
+            ('中文', ['cjk.md']),
+            ('istanbul', ['turkish.md']),
+            # İ 的 Python 小写是 "i" + 组合音符：必须仍能命中。
+            ('i\u0307abc', ['turkish.md']),
+            # 纯 ASCII 的 iabc 不等于 i+组合音符+abc：不应命中。
+            ('iabc', []),
+        ]
+        for query, expected in expectations:
+            with self.subTest(query=query):
+                found = self.store.search_documents(query)
+                self.assertEqual([r['path'] for r in found['items']], expected)
+
     @unittest.skipUnless(os.name == 'nt', 'Windows case-only rename')
     def test_case_only_rename_guards(self):
         item = self.add('folder/readme.md', 'case rename')

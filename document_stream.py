@@ -7,6 +7,15 @@ BLOCK_BYTES = 1024 * 1024
 FULL_BYTES = 10 * BLOCK_BYTES
 MAX_BYTES = 1536 * BLOCK_BYTES
 BREAKS = re.compile(r'\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]')
+# 行数统计快路径：只含 LF 或 CRLF 的文本无需正则，直接用 C 级 count。
+_EXOTIC_BREAKS = re.compile(r'[\v\f\x1c-\x1e\x85\u2028\u2029]')
+
+
+def count_breaks(text):
+    """统计换行个数。仅含 LF/CRLF 时每个 \n 恰好对应一个换行，走 count 快路径。"""
+    if not _EXOTIC_BREAKS.search(text) and text.count('\r') == text.count('\r\n'):
+        return text.count('\n')
+    return len(BREAKS.findall(text))
 
 
 def read_block(stream, limit=BLOCK_BYTES):
@@ -41,7 +50,7 @@ def file_blocks(path):
                 break
             text = data.decode('utf-8')
             yield offset, data, text, line
-            line += len(BREAKS.findall(text))
+            line += count_breaks(text)
 
 
 def inspect_file(path, consume=None):
@@ -64,7 +73,7 @@ def inspect_file(path, consume=None):
             newline = '\r\n'
         elif '\r' in text and newline != '\r\n':
             newline = '\r'
-        breaks += len(BREAKS.findall(text))
+        breaks += count_breaks(text)
         last = text[-1:]
         if consume:
             consume(offset, data, text, line)
@@ -146,7 +155,7 @@ def search_chunks(rows, words):
                             length += len(char.lower())
                             if length > match.start():
                                 break
-                    number = line + len(BREAKS.findall(text[:position]))
+                    number = line + count_breaks(text[:position])
                     if len(snippets) == 3 and number >= snippets[-1]['line']:
                         break
                     stop = BREAKS.search(text, position)
@@ -164,7 +173,7 @@ def search_chunks(rows, words):
                 else:
                     break
         base += low_cut
-        line += len(BREAKS.findall(text[:cut]))
+        line += count_breaks(text[:cut])
         carry = text[cut:]
 
     for row in rows:

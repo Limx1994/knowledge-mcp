@@ -102,7 +102,10 @@ def main():
                 with file.open('ab') as stream:
                     stream.write(b'x')
                 report = store.refresh_index()
-                assert not report['ok'] and report['failed'] == 1 and report['updated'] == 0, report
+                # 超限文档计 skipped（refresh_index 的 issue(..., True)），不影响整库：
+                # ok 仍为 True、failed 为 0，仅该文档不入索引。
+                assert report['ok'] and report['skipped'] == 1, report
+                assert report['failed'] == 0 and report['updated'] == 0, report
                 with file.open('r+b') as stream:
                     stream.truncate(MAX_BYTES)
                 assert store.refresh_index()['ok']

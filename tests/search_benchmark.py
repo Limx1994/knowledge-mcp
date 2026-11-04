@@ -59,11 +59,20 @@ def main():
                     start = time.perf_counter()
                     result = store.search_documents(**options)
                     times.append(time.perf_counter() - start)
+                # search_documents 默认每次先做全目录同步，总时长含同步开销；单独计量
+                # 一次 _sync() 以便拆分口径，检索净耗时 = seconds - sync_seconds。
+                sync_times = []
+                for _ in range(3):
+                    start = time.perf_counter()
+                    store._sync()
+                    sync_times.append(time.perf_counter() - start)
                 # Exclude sync timing; compare all returned search fields exactly.
                 result.pop('sync')
                 digest = hashlib.sha256(json.dumps(result, sort_keys=True,
                     ensure_ascii=False).encode()).hexdigest()
                 results[name] = dict(seconds=statistics.median(times),
+                                     sync_seconds=statistics.median(sync_times),
+                                     search_seconds=statistics.median(times) - statistics.median(sync_times),
                                      total=result['total'], digest=digest)
                 print(json.dumps(dict(case=name, **results[name])), flush=True)
             profile = cProfile.Profile()
