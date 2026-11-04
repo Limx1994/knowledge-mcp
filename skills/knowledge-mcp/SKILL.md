@@ -9,7 +9,7 @@ description: 检索、阅读、创建和维护本地 Markdown/TXT 知识库（�
 
 ## 通用规则
 
-1. **版本即锁**：update/delete/move/rename/patch 必须带 `expected_version`（取自最近一次 `read_document`/`read_document_chunk`/`list_entries`）。冲突时服务返回当前版本：重读 → 合并 → 用新版本重试一次；再冲突则停止并说明存在并发编辑，禁止用旧版本重试。
+1. **版本即锁**：update/delete/move/rename/patch 必须带 `expected_version`（取自最近一次 `read_document`/`read_document_chunk`/`list_entries`）；冲突时服务返回当前版本，重读 → 合并 → 用新版本重试一次，再冲突则停止并说明存在并发编辑，禁止用旧版本重试。
 2. **失败不重放**：超时或断连不代表写入未发生，先重新读取核实。
 3. **不猜路径**：写入前用 `list_documents` 或 `search_documents` 确认目标；`create_document` 拒绝覆盖。
 4. **非语义检索**：子串匹配，多关键词空格分隔且全部命中，英文忽略大小写，`"双引号"` 为短语。搜不到时换同义词或缩短关键词，不要断言“库中没有”。
@@ -23,7 +23,7 @@ read_document(path, start_line, max_lines)   # 按行精读，从片段行号附
 read_document(path, start_line=下一批)        # has_more=true 时翻页
 ```
 
-先 `list_documents` 浏览目录，再用 `directory` 缩小范围；回答时引用行号。分页上限 100 条；按行读取上限 1000 行，`read_document_chunk` 单次上限 1 MiB。
+先 `list_documents` 浏览目录，用 `directory` 缩小范围，回答时引用行号。分页上限 100 条；按行读取上限 1000 行，`read_document_chunk` 单次上限 1 MiB。
 
 **大文件（>10 MiB 或超长单行）**：
 
