@@ -9,7 +9,7 @@ description: 检索、阅读、创建和维护本地 Markdown/TXT 知识库（�
 
 ## 通用规则
 
-1. **版本即锁**：update/delete/move/rename/patch 必须带 `expected_version`（取自最近一次 `read_document`/`read_document_chunk`/`list_entries`）。冲突时服务返回当前版本：重读 → 合并差异 → 用新版本重试一次；再冲突则停止并说明存在并发编辑。禁止用旧版本重试。
+1. **版本即锁**：update/delete/move/rename/patch 必须带 `expected_version`（取自最近一次 `read_document`/`read_document_chunk`/`list_entries`）。冲突时服务返回当前版本：重读 → 合并 → 用新版本重试一次；再冲突则停止并说明存在并发编辑，禁止用旧版本重试。
 2. **失败不重放**：超时或断连不代表写入未发生，先重新读取核实。
 3. **不猜路径**：写入前用 `list_documents` 或 `search_documents` 确认目标；`create_document` 拒绝覆盖。
 4. **非语义检索**：子串匹配，多关键词空格分隔且全部命中，英文忽略大小写，`"双引号"` 为短语。搜不到时换同义词或缩短关键词，不要断言“库中没有”。
@@ -23,7 +23,7 @@ read_document(path, start_line, max_lines)   # 按行精读，从片段行号附
 read_document(path, start_line=下一批)        # has_more=true 时翻页
 ```
 
-先 `list_documents` 浏览目录，再用 `directory` 缩小范围；回答时引用行号。分页上限 100 条；`read_document` 按行读取上限 1000 行，`read_document_chunk` 单次上限 1 MiB。
+先 `list_documents` 浏览目录，再用 `directory` 缩小范围；回答时引用行号。分页上限 100 条；按行读取上限 1000 行，`read_document_chunk` 单次上限 1 MiB。
 
 **大文件（>10 MiB 或超长单行）**：
 
@@ -36,7 +36,7 @@ read_document_chunk(path, offset=返回的 next_offset)   # has_more=true 时
 
 ## 工作流 2：创建与修改
 
-创建前 `list_documents(directory=目标目录)` 确认无同名 → `create_document(path, content)`。父目录自动创建，UTF-8 + LF，单次 ≤10 MiB；超大内容先建空文档，再用 `patch_document` 从末尾分段追加（每段 ≤1 MiB，每段用上一段返回的新版本）。
+创建前 `list_documents(directory=目标目录)` 确认无同名 → `create_document(path, content)`。父目录自动创建，UTF-8 + LF，单次 ≤10 MiB；超大内容先建空文档，再用 `patch_document` 从末尾分段追加（每段 ≤1 MiB，用上一段返回的新版本）。
 
 ```text
 read_document_chunk(path, offset=目标位置)   # 局部改：拿 version 与字节范围
@@ -68,11 +68,11 @@ restore_document(record_id)               # 恢复原路径；同名冲突拒绝
 purge_document(record_id)                 # 永久删除，不可恢复
 ```
 
-删除前向用户确认；恢复冲突时先移动或改名同名文件。无递归删除、无回收站清空工具；`purge_document` 永久删除前必须明确征得用户同意。
+删除前向用户确认；恢复冲突时先移动或改名同名文件。无递归删除与回收站清空工具；`purge_document` 永久删除前必须明确征得用户同意。
 
 ## 工作流 5：索引维护
 
-常规无需调用（读写前自动增量同步）。批量导入后用 `refresh_index(full=false)`；怀疑漏检用 `full=true`。返回 `failed`/`issues` 时看明细（≤200 条，超出看 `issues_truncated`），修复编码/权限/超限文件后重刷；`skipped` 多为重解析点或不支持扩展名，属正常。
+常规无需调用（读写前自动增量同步）。批量导入后用 `refresh_index(full=false)`；怀疑漏检用 `full=true`。返回 `failed`/`issues` 时看明细（≤200 条，超出看 `issues_truncated`），修复后重刷；`skipped` 多为重解析点或不支持扩展名，属正常。
 
 ## 错误速查
 
