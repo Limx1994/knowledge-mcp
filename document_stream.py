@@ -7,15 +7,21 @@ BLOCK_BYTES = 1024 * 1024
 FULL_BYTES = 10 * BLOCK_BYTES
 MAX_BYTES = 1536 * BLOCK_BYTES
 BREAKS = re.compile(r'\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]')
-# 行数统计快路径：只含 LF 或 CRLF 的文本无需正则，直接用 C 级 count。
-_EXOTIC_BREAKS = re.compile(r'[\v\f\x1c-\x1e\x85\u2028\u2029]')
 
 
 def count_breaks(text):
-    """统计换行个数。仅含 LF/CRLF 时每个 \n 恰好对应一个换行，走 count 快路径。"""
-    if not _EXOTIC_BREAKS.search(text) and text.count('\r') == text.count('\r\n'):
-        return text.count('\n')
-    return len(BREAKS.findall(text))
+    """统计换行个数。
+
+    仅含 LF 或 CRLF 时每个 \n 恰好对应一个换行，用 C 级 count 即可得出，此时只需
+    确认没有其它换行符。正则扫描比多次 in/count 慢一个数量级，故改用字符包含检查，
+    仅在出现稀有换行符或孤立 \r 时回落正则，结果与 BREAKS 完全一致。
+    """
+    if ('\x0b' in text or '\x0c' in text or '\x1c' in text or '\x1d' in text
+            or '\x1e' in text or '\x85' in text or '\u2028' in text or '\u2029' in text):
+        return len(BREAKS.findall(text))
+    if '\r' in text and text.count('\r') != text.count('\r\n'):
+        return len(BREAKS.findall(text))
+    return text.count('\n')
 
 
 def read_block(stream, limit=BLOCK_BYTES):
@@ -49,8 +55,9 @@ def file_blocks(path):
             if not data:
                 break
             text = data.decode('utf-8')
-            yield offset, data, text, line
-            line += count_breaks(text)
+            breaks = count_breaks(text)
+            yield offset, data, text, line, breaks
+            line += breaks
 
 
 def inspect_file(path, consume=None):
@@ -60,11 +67,12 @@ def inspect_file(path, consume=None):
     with path.open('rb') as stream:
         bom = stream.read(3) == codecs.BOM_UTF8
     digest = hashlib.sha256(codecs.BOM_UTF8 if bom else b'')
-    breaks = 0
+    total_breaks = 0
     last = ''
     newline = '\n'
     size = 3 if bom else 0
-    for offset, data, text, line in file_blocks(path):
+    # file_blocks 已算出每块行数，直接累加，避免同一段文本统计两遍。
+    for offset, data, text, line, breaks in file_blocks(path):
         digest.update(data)
         size += len(data)
         if size > MAX_BYTES:
@@ -73,7 +81,7 @@ def inspect_file(path, consume=None):
             newline = '\r\n'
         elif '\r' in text and newline != '\r\n':
             newline = '\r'
-        breaks += count_breaks(text)
+        total_breaks += breaks
         last = text[-1:]
         if consume:
             consume(offset, data, text, line)
@@ -81,7 +89,7 @@ def inspect_file(path, consume=None):
     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or size != after.st_size:
         raise ValueError('扫描期间文件发生变化，请重试')
     return dict(size=size, mtime_ns=after.st_mtime_ns, version=digest.hexdigest(),
-                total_lines=breaks + int(bool(last) and not BREAKS.fullmatch(last)),
+                total_lines=total_breaks + int(bool(last) and not BREAKS.fullmatch(last)),
                 bom=bom, newline=newline)
 
 

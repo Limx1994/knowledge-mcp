@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from knowledge_store import KnowledgeStore, StoreError
-from document_stream import BLOCK_BYTES, inspect_file, search_chunks
+from document_stream import BLOCK_BYTES, BREAKS, count_breaks, inspect_file, search_chunks
 
 TEMP = Path(__file__).resolve().parents[1] / '.test-work'
 TEMP.mkdir(exist_ok=True)
@@ -155,6 +155,27 @@ class ChunkTests(unittest.TestCase):
         self.store.create_document('empty.md', '')
         self.assertEqual(self.store.read_document('empty.md')['total_lines'], 0)
         self.assertFalse(self.store.read_document_chunk('empty.md')['has_more'])
+        # 稀有换行符与 CRLF 混排：行号必须与 BREAKS 口径一致（走正则回落路径）。
+        file = self.store.docs / 'rare.md'
+        file.write_bytes(b'a\r\nb\x0bc\x1cd\xc2\x85e\xe2\x80\xa8f\ng\r\n')
+        self.assertTrue(self.store.refresh_index()['ok'])
+        read = self.store.read_document('rare.md')
+        self.assertEqual(read['total_lines'], 7)
+        self.assertEqual([r['text'] for r in read['lines']],
+                         ['a', 'b', 'c', 'd', 'e', 'f', 'g'])
+
+    def test_count_breaks_matches_reference(self):
+        # 快路径必须与 BREAKS 正则逐一等价：覆盖每种换行符、混排与长文本。
+        cases = [
+            '', '\n', '\r', '\r\n', 'a', 'a\n', 'a\r', 'a\r\n', 'a\nb', 'a\rb',
+            'a\r\nb', 'a\r\nb\r\n', 'a\r\rb', 'a\n\n\nb', 'a\x0bb', 'a\x0cb',
+            'a\x1cb', 'a\x1db', 'a\x1eb', 'a\x1c\x1d\x1eb', 'a\x85b', 'a\u2028b',
+            'a\u2029b', 'a\u2028\u2029b', 'a\r\n\rb', 'a\n\rb', '\r\n\r\n',
+            '中文\r\n英文\n', 'x' * 5000 + '\n' + 'y' * 5000,
+            '混合\ntext\r\n第二行\x0b', 'a\u0085b',
+        ]
+        for text in cases:
+            self.assertEqual(count_breaks(text), len(BREAKS.findall(text)), repr(text))
 
     def test_retained_chunks_and_fts_boundary(self):
         file = self.store.docs / 'retained.md'
